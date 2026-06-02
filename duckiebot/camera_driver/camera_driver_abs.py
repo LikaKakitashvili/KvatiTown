@@ -54,6 +54,14 @@ class CameraDriverAbs(ABC):
         self._last_frame = None
         print("Camera stopped")
 
+    def read_rgb(self) -> Tuple[bool, Optional[np.ndarray]]:
+        """Read frame as RGB (BGR from camera converted for vision code)."""
+        success, frame = self.read()
+        if success and frame is not None:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            return True, rgb
+        return False, None
+
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
         if not self._running:
             # Only warn once, not every frame

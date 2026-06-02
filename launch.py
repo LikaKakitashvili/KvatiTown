@@ -352,6 +352,16 @@ def package_task(task_name):
             print(f"   Adding server: servers/{task_name}/")
             tar.add(task_server_dir, arcname=f'servers/{task_name}', filter=no_pycache)
 
+        templates_dir = os.path.join(PROJECT_ROOT, 'servers', 'templates')
+        if os.path.exists(templates_dir):
+            print("   Adding templates: servers/templates/")
+            tar.add(templates_dir, arcname='servers/templates', filter=no_pycache)
+
+        duckiebot_dir = os.path.join(PROJECT_ROOT, 'duckiebot')
+        if os.path.exists(duckiebot_dir):
+            print("   Adding duckiebot drivers: duckiebot/")
+            tar.add(duckiebot_dir, arcname='duckiebot', filter=no_pycache)
+
     buf.seek(0)
     print("Package created!")
     return buf
