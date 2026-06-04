@@ -1,12 +1,30 @@
+# White lane line (low saturation, bright)
 white_lower_h: 0
 white_lower_s: 0
-white_lower_v: 0
+white_lower_v: 120
 white_upper_h: 179
-white_upper_s: 255
+white_upper_s: 110
 white_upper_v: 255
-yellow_lower_h: 0
-yellow_lower_s: 0
-yellow_lower_v: 0
-yellow_upper_h: 179
+
+# Yellow — primary band (orange/yellow tape)
+yellow_lower_h: 8
+yellow_lower_s: 30
+yellow_lower_v: 40
+yellow_upper_h: 55
 yellow_upper_s: 255
 yellow_upper_v: 255
+
+# Yellow — alt band (tape looks cyan/green under pink camera cast)
+yellow_alt_lower_h: 82
+yellow_alt_lower_s: 55
+yellow_alt_lower_v: 70
+yellow_alt_upper_h: 105
+yellow_alt_upper_s: 255
+yellow_alt_upper_v: 255
+
+# Spatial search regions (fraction of image width)
+yellow_side_width_frac: 0.75   # yellow: left 75% of frame
+white_side_width_frac: 0.75    # white: right 75% of frame
+yellow_center_exclude_frac: 0.18
+edge_mag_threshold: 28
+use_white_balance: true

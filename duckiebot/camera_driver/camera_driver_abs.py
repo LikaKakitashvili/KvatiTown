@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import threading
 import numpy as np
 import cv2
 import os
@@ -20,6 +21,7 @@ class CameraDriverAbs(ABC):
         self._last_frame: Optional[np.ndarray] = None
         self._device = None
         self._consecutive_failures = 0
+        self._read_lock = threading.Lock()
 
 
     @abstractmethod
@@ -70,19 +72,19 @@ class CameraDriverAbs(ABC):
                 self._warned_not_running = True
             return False, None
 
-        success, frame = self._capture_frame()
+        with self._read_lock:
+            success, frame = self._capture_frame()
 
-        if success and frame is not None:
-            self._last_frame = frame.copy()
-            self._frame_count += 1
-            self._consecutive_failures = 0
-            return True, frame
-        else:
+            if success and frame is not None:
+                self._last_frame = frame.copy()
+                self._frame_count += 1
+                self._consecutive_failures = 0
+                return True, frame
+
             self._consecutive_failures += 1
             # Return last frame for brief hiccups (up to 30 failures ~ 0.3s)
-            # After that return False so callers know the pipeline is dead
             if self._last_frame is not None and self._consecutive_failures < 30:
-                return True, self._last_frame
+                return True, self._last_frame.copy()
             return False, None
 
     def read_jpeg(self) -> Tuple[bool, Optional[bytes]]:

@@ -37,17 +37,22 @@ class CameraDriver(CameraDriverAbs):
             raise RuntimeError("Failed to open camera")
 
         # isOpened() can return True even when GStreamer fails internally.
-        # nvarguscamerasrc needs a moment to warm up, so retry a few times.
+        # nvarguscamerasrc needs a moment to warm up, so retry with backoff.
         import time
-        for _ in range(10):
-            ret, _ = self._device.read()
-            if ret:
+        warmup_attempts = 30
+        for attempt in range(warmup_attempts):
+            ret, frame = self._device.read()
+            if ret and frame is not None:
+                print(f"[JetsonCamera] First frame after {attempt + 1} attempt(s)")
                 break
-            time.sleep(0.3)
+            time.sleep(0.5)
         else:
             self._device.release()
             self._device = None
-            raise RuntimeError("Camera opened but returned no frames after warm-up — check nvargus-daemon and camera connection")
+            raise RuntimeError(
+                "Camera opened but returned no frames after warm-up — "
+                "check nvargus-daemon and camera connection"
+            )
 
         actual_w = int(self._device.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self._device.get(cv2.CAP_PROP_FRAME_HEIGHT))

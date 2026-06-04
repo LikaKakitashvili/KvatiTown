@@ -118,8 +118,12 @@ def update_hsv():
         [current['white_upper_h'],  current['white_upper_s'],  current['white_upper_v']],
     )
     try:
+        with open(LANE_HSV_CONFIG_FILE, 'r') as f:
+            saved = yaml.safe_load(f) or {}
+        saved.update(current)
         with open(LANE_HSV_CONFIG_FILE, 'w') as f:
-            yaml.dump(current, f, default_flow_style=False)
+            yaml.dump(saved, f, default_flow_style=False)
+        mod.reload_hsv_config()
     except Exception as e:
         print(f"[LaneServoing] Could not save HSV config: {e}")
     return jsonify({'status': 'ok'})

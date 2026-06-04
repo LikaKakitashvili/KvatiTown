@@ -1,5 +1,10 @@
-base_speed: 0.31
-curve_speed: 0
+base_speed: 0.48
+curve_speed: 0.5
+p_gain: 0.16
 d_gain: 0.7
 detection_threshold: 100
-p_gain: 0.31
+
+# Same ROI / slice layout as visual_lane_servoing (3 lines, full width)
+roi_start: 0.47
+roi_slice_band: 0.35
+num_slices: 3

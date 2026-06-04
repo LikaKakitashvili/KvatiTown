@@ -56,7 +56,6 @@ def reload_hsv_config() -> None:
 
 
 def _correct_white_balance(bgr: np.ndarray) -> np.ndarray:
-    """Gray-world WB — reduces pink/magenta cast on outdoor Jetson cameras."""
     img = bgr.astype(np.float32)
     means = [img[:, :, c].mean() + 1e-6 for c in range(3)]
     gray = sum(means) / 3.0
@@ -96,7 +95,6 @@ def _white_color_mask(img_hsv: np.ndarray) -> np.ndarray:
 
 
 def get_color_masks(bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Pure HSV masks for the calibration UI (no Sobel / edge gating)."""
     work = _correct_white_balance(bgr) if _use_white_balance else bgr
     hsv = cv2.cvtColor(work, cv2.COLOR_BGR2HSV)
     return (

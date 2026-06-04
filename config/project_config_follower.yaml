@@ -1,7 +1,8 @@
-role: leader
+role: follower
 
 loop_hz: 20
 
+# Set this to your leader's hostname or IP
 leader_host: 172.20.10.4
 leader_port: 5000
 
@@ -29,4 +30,5 @@ sign_confirm_frames: 3
 sign_cooldown_s: 2.0
 sign_center_roi: 1.0
 
+# AprilTag IDs used to recognize the leader robot
 leader_tag_ids: []

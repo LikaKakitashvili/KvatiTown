@@ -24,7 +24,7 @@ from duckiebot.wheel_driver import DaguWheelsDriver
 from duckiebot.wheel_driver.wheels_driver_abs import WheelPWMConfiguration
 from duckiebot.led_driver import LEDDriver
 from launcher.ports import find_available_port
-from servers.common import make_frame_generator, shutdown_cleanup, suppress_http_logs
+from servers.common import shutdown_cleanup, suppress_http_logs
 
 LANE_CONFIG_FILE = os.path.join(project_root, "config", "lane_servoing_config.yaml")
 LANE_HSV_CONFIG_FILE = os.path.join(project_root, "config", "lane_servoing_hsv_config.yaml")
@@ -36,14 +36,87 @@ leds = None
 agent = None
 running = True
 stop_event = threading.Event()
-_state_lock = threading.Lock()
-_last_pwm = (0.0, 0.0)
-_last_debug_info = None
-_control_thread_started = False
+_agent_thread = None
+_camera_ready = False
+_camera_start_lock = threading.Lock()
+
+
+def _stop_camera():
+    global camera, _camera_ready
+    if camera is not None:
+        try:
+            camera.stop()
+        except Exception:
+            pass
+    camera = None
+    _camera_ready = False
+    time.sleep(2.0)
+
+
+def _try_start_camera(max_attempts: int = 1) -> bool:
+    """Start camera with retries; return True on success."""
+    global camera, _camera_ready
+
+    with _camera_start_lock:
+        if _camera_ready and camera is not None:
+            return True
+
+        _stop_camera()
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                cam = CameraDriver()
+                cam.start()
+                camera = cam
+                _camera_ready = True
+                print("  Camera: ok")
+                return True
+            except Exception as e:
+                print(f"  Camera attempt {attempt}/{max_attempts} failed: {e}")
+                _stop_camera()
+                if attempt < max_attempts:
+                    time.sleep(5.0)
+        return False
+
+
+def _start_agent_thread():
+    global _agent_thread
+    if not _camera_ready or camera is None:
+        return
+    if _agent_thread is not None and _agent_thread.is_alive():
+        return
+    _agent_thread = threading.Thread(target=_project_agent_loop, daemon=True, name="ProjectAgentLoop")
+    _agent_thread.start()
+
+
+def _camera_retry_loop():
+    """Keep trying camera init in background so UI can still be opened."""
+    while not stop_event.is_set():
+        if _camera_ready and camera is not None:
+            time.sleep(2.0)
+            continue
+        print("[Project] Camera retry (waiting for nvargus)...")
+        if _try_start_camera(max_attempts=1):
+            _start_agent_thread()
+        time.sleep(8.0)
+
+
+def _error_frame(message: str):
+    blank = np.zeros((480, 640, 3), dtype=np.uint8)
+    for i, line in enumerate(message.split("\n")[:6]):
+        cv2.putText(
+            blank,
+            line[:70],
+            (20, 80 + i * 34),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 255),
+            2,
+        )
+    return blank
 
 
 def _visualize(frame):
-    global running
     if frame is None:
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
         cv2.putText(blank, "Waiting for camera...", (160, 240),
@@ -52,63 +125,71 @@ def _visualize(frame):
     if agent is None:
         return frame
 
-    # Rendering-only: wheel control happens in the background control thread.
-    with _state_lock:
-        pwm_left, pwm_right = _last_pwm
-        debug_info = _last_debug_info or getattr(agent, "last_debug_info", None)
+    frame_bgr, debug_info = project_agent.get_viz_snapshot()
+    if frame_bgr is None:
+        frame_bgr = frame
+    if debug_info is None:
+        debug_info = getattr(agent, "last_debug_info", None)
 
-    # Frame is BGR from real CameraDriver when rgb=False generator is used.
-    bgr = frame
+    pwm_left = 0.0
+    pwm_right = 0.0
+    if isinstance(debug_info, dict):
+        pwm_left = float(debug_info.get("pwm_left", 0.0))
+        pwm_right = float(debug_info.get("pwm_right", 0.0))
+
     try:
         if debug_info is None:
-            return bgr
-        return create_lane_visualization(bgr, debug_info, pwm_left, pwm_right)
+            return frame_bgr
+        return create_lane_visualization(frame_bgr, debug_info, pwm_left, pwm_right)
     except Exception as e:
         print(f"[Project] visualize error: {e}")
-        cv2.putText(bgr, str(e)[:80], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        return bgr
+        cv2.putText(frame_bgr, str(e)[:80], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        return frame_bgr
 
 
-def _control_loop():
-    """Continuously run lane controller and drive wheels.
-
-    This makes the robot start moving immediately after task launch,
-    even if nobody opens the UI video stream yet.
-    """
-    global _last_pwm, _last_debug_info
-
-    # Avoid sending commands before motors are ready.
-    while not stop_event.is_set() and (camera is None or wheels is None or agent is None):
-        time.sleep(0.01)
-
-    while not stop_event.is_set():
-        ok, frame_bgr = camera.read()
-        if not ok or frame_bgr is None:
-            # Keep it safe on camera failure.
-            with _state_lock:
-                _last_pwm = (0.0, 0.0)
-            if wheels is not None:
-                wheels.set_wheels_speed(0.0, 0.0)
-            continue
-
+def _generate_project_frames():
+    """MJPEG stream from agent-published snapshots (no second camera.read)."""
+    while True:
         try:
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            pwm_left, pwm_right = agent.compute_commands(frame_rgb)
+            if not _camera_ready:
+                display = _error_frame(
+                    "Camera not ready.\n"
+                    "1) Stop other tasks using the camera\n"
+                    "2) On bot: sudo systemctl restart nvargus-daemon\n"
+                    "3) Wait ~10s, refresh this page"
+                )
+            else:
+                frame_bgr, _ = project_agent.get_viz_snapshot()
+                if frame_bgr is None:
+                    display = _error_frame("Waiting for first frame from agent...")
+                else:
+                    display = _visualize(frame_bgr)
+            ret, jpeg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 50])
+            if not ret:
+                continue
+
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n"
+            )
         except Exception as e:
-            print(f"[Project] control_loop compute error: {e}")
-            pwm_left, pwm_right = 0.0, 0.0
-
-        with _state_lock:
-            _last_pwm = (pwm_left, pwm_right)
-            _last_debug_info = getattr(agent, "last_debug_info", None)
-
-        if running and wheels is not None:
-            wheels.set_wheels_speed(pwm_left, pwm_right)
-        elif wheels is not None:
-            wheels.set_wheels_speed(0.0, 0.0)
+            print(f"[Project][VideoStream] Error: {e}")
+            time.sleep(0.05)
 
 
-generate_frames = make_frame_generator(lambda: camera, _visualize, quality=50, rgb=False)
+def _project_agent_loop():
+    """Run project task main loop in background thread."""
+    global running
+    if camera is None:
+        print("[Project] Agent loop skipped: camera unavailable")
+        return
+    running = True
+    try:
+        project_agent.main(camera, wheels, leds, stop_event)
+    except Exception as e:
+        print(f"[Project] Agent loop crashed: {e}")
+    finally:
+        running = False
 
 
 @app.route("/")
@@ -118,7 +199,7 @@ def index():
 
 @app.route("/video")
 def video():
-    return Response(generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    return Response(_generate_project_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.route("/shutdown")
@@ -129,7 +210,9 @@ def shutdown():
 
 @app.route("/start", methods=["POST"])
 def start():
-    global running
+    global _agent_thread, running
+    if _agent_thread is None or not _agent_thread.is_alive():
+        return jsonify({"status": "stopped", "message": "restart task process to start again"})
     running = True
     return jsonify({"status": "running"})
 
@@ -138,6 +221,7 @@ def start():
 def stop():
     global running
     running = False
+    stop_event.set()
     if wheels:
         wheels.set_wheels_speed(0.0, 0.0)
     return jsonify({"status": "stopped"})
@@ -194,8 +278,13 @@ def update_hsv():
         [current["white_upper_h"], current["white_upper_s"], current["white_upper_v"]],
     )
     try:
+        from tasks.project.packages import visual_servoing_activity as vsa
+        with open(LANE_HSV_CONFIG_FILE, "r") as f:
+            saved = yaml.safe_load(f) or {}
+        saved.update(current)
         with open(LANE_HSV_CONFIG_FILE, "w") as f:
-            yaml.dump(current, f, default_flow_style=False)
+            yaml.dump(saved, f, default_flow_style=False)
+        vsa.reload_hsv_config()
     except Exception as e:
         print(f"[Project] Could not save HSV config: {e}")
     return jsonify({"status": "ok"})
@@ -205,11 +294,22 @@ def update_hsv():
 def status():
     if agent is None:
         return jsonify({"status": "not_initialized"})
+    leader = project_agent.get_leader_status()
+    _, _debug_info = project_agent.get_viz_snapshot()
+    if _debug_info is None:
+        _debug_info = getattr(agent, "last_debug_info", None)
+    _frame_count = int(_debug_info.get("frame_count", 0)) if isinstance(_debug_info, dict) else 0
     return jsonify(
         {
             "status": "active",
-            "frame_count": agent.frame_count,
-            "sign_state": getattr(agent, "sign_state", "unknown"),
+            "camera_ready": _camera_ready,
+            "running": running,
+            "frame_count": _frame_count,
+            "convoy_state": leader.get("state", "STOPPED"),
+            "convoy_speed": float(leader.get("speed", 0.0)),
+            "convoy_ts": float(leader.get("ts", 0.0)),
+            "event": leader.get("event", "EVENT_NORMAL"),
+            "tag_ids": leader.get("tag_ids", []),
             "config": {
                 "p_gain": agent.p_gain,
                 "d_gain": agent.d_gain,
@@ -218,6 +318,11 @@ def status():
             },
         }
     )
+
+
+@app.route("/convoy/status")
+def convoy_status():
+    return jsonify(project_agent.get_leader_status())
 
 
 def main():
@@ -246,20 +351,12 @@ def main():
     print("  Wheels: ok")
 
     print("\n[3/4] Initializing camera driver...")
-    camera = CameraDriver()
-    camera.start()
-    print("  Camera: ok")
+    if not _try_start_camera(max_attempts=2):
+        print("  Camera: unavailable now (server will continue, retrying in background)")
 
     print("\n[4/4] Initializing project lane agent...")
     agent = project_agent.build_project_lane_agent()
     print("  Agent: ready")
-
-    def _start_control_thread():
-        global _control_thread_started
-        if _control_thread_started:
-            return
-        _control_thread_started = True
-        threading.Thread(target=_control_loop, daemon=True, name="ProjectControlLoop").start()
 
     def _shutdown(signum, frame):
         print("\nShutting down...")
@@ -279,7 +376,8 @@ def main():
     print(f"\nWeb Interface: http://localhost:{web_port}")
     print("Press Ctrl+C to stop\n")
 
-    _start_control_thread()
+    _start_agent_thread()
+    threading.Thread(target=_camera_retry_loop, daemon=True, name="ProjectCameraRetry").start()
 
     try:
         app.run(host="0.0.0.0", port=web_port, debug=False, threaded=True)

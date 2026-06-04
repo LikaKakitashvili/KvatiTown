@@ -9,7 +9,7 @@ def create_lane_visualization(
     pwm_right: float,
 ) -> np.ndarray:
     # UI scaling only: larger makes the lane area appear wider.
-    display_w = 480
+    display_w = 640
     h, w = image.shape[:2]
     display_h = int(h * display_w / w)
 
@@ -18,9 +18,23 @@ def create_lane_visualization(
     scale_y = display_h / h
     scale_x = display_w / w
 
+    line_x0, line_x1 = 0, display_w
+    roi = debug_info.get("roi_bounds")
+    if roi and len(roi) == 4:
+        y0, y1, x0, x1 = roi
+        line_x0 = int(x0 * scale_x)
+        line_x1 = int(x1 * scale_x)
+        cv2.rectangle(
+            cam,
+            (line_x0, int(y0 * scale_y)),
+            (line_x1, int(y1 * scale_y)),
+            (255, 128, 0),
+            2,
+        )
+
     for sy in debug_info.get('slice_ys', []):
         dy = int(sy * scale_y)
-        cv2.line(cam, (0, dy), (display_w, dy), (0, 255, 255), 1)
+        cv2.line(cam, (line_x0, dy), (line_x1, dy), (0, 255, 255), 1)
 
     for i, x in enumerate(debug_info.get('yellow_xs', [])):
         sy_list = debug_info.get('slice_ys', [])
@@ -35,6 +49,11 @@ def create_lane_visualization(
             dy = int(sy_list[i] * scale_y)
             dx = int(x * scale_x)
             cv2.circle(cam, (dx, dy), 5, (255, 255, 255), -1)  # white dot = white line
+
+    sign_type = debug_info.get("sign_type", "UNKNOWN")
+    tag_ids = debug_info.get("tag_ids", [])
+    cv2.putText(cam, f"Sign: {sign_type}", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    cv2.putText(cam, f"Tag IDs: {tag_ids}", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     # Panel 2 – combined lane heatmap
     lane_vis  = cv2.resize(cv2.applyColorMap(debug_info['lane_mask'],  cv2.COLORMAP_HOT),  (display_w, display_h))
@@ -57,7 +76,8 @@ def create_lane_visualization(
     cv2.putText(grid, "Yellow Lines", (display_w + 10,  display_h + 20), font, 0.5, green, 1)
 
     info = _info_strip(display_w * 2, debug_info, pwm_left, pwm_right)
-    return np.vstack([grid, info])
+    out_bgr = np.vstack([grid, info])
+    return cv2.cvtColor(out_bgr, cv2.COLOR_BGR2RGB)
 
 
 def _draw_bar(canvas, label, x0, y, bar_w, bar_h, value, font):
