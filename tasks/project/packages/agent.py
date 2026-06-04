@@ -33,8 +33,22 @@ _leader_status: Dict[str, Any] = {
     "ts": float(time.time()),
 }
 
-_apriltag_detector = None
-_apriltag_init_attempted = False
+_aruco_detector = None
+_aruco_init_attempted = False
+_tag_log_state = {"last_ids": frozenset(), "last_log_ts": 0.0}
+
+
+class _TagDetection:
+    """ArUco tag detection (tag36h11 via OpenCV)."""
+
+    __slots__ = ("tag_id", "center", "corners")
+
+    def __init__(self, tag_id: int, center: Tuple[float, float], corners):
+        self.tag_id = int(tag_id)
+        self.center = center
+        self.corners = corners
+
+
 _sign_runtime = {
     "candidate_event": EVENT_NORMAL,
     "candidate_count": 0,
@@ -171,22 +185,100 @@ def next_state(current_state: str, event: str) -> str:
     return current_state
 
 
-def _get_apriltag_detector():
-    global _apriltag_detector, _apriltag_init_attempted
-    if _apriltag_init_attempted:
-        return _apriltag_detector
+def _init_aruco_detector() -> bool:
+    global _aruco_detector, _aruco_init_attempted
+    if _aruco_init_attempted:
+        return _aruco_detector is not None
 
-    _apriltag_init_attempted = True
+    _aruco_init_attempted = True
     try:
-        import importlib
-
-        detector_cls = importlib.import_module("pupil_apriltags").Detector
-        _apriltag_detector = detector_cls(families="tag36h11")
-        print("[Project][AprilTag] Detector initialized (pupil_apriltags).")
+        _aruco_detector = _create_aruco_detector()
+        print("[Project][ArUco] Detector initialized (DICT_APRILTAG_36h11).", flush=True)
+        return True
     except Exception as e:
-        _apriltag_detector = None
-        print(f"[Project][AprilTag] Detector unavailable ({e}). Using EVENT_NORMAL fallback.")
-    return _apriltag_detector
+        _aruco_detector = None
+        print(f"[Project][ArUco] Detector unavailable ({e}). Sign detection disabled.", flush=True)
+        return False
+
+
+def _create_aruco_detector():
+    aruco = cv2.aruco
+    dict_id = getattr(aruco, "DICT_APRILTAG_36h11", None)
+    if dict_id is None:
+        raise RuntimeError("OpenCV build lacks DICT_APRILTAG_36h11")
+
+    if hasattr(aruco, "getPredefinedDictionary"):
+        dictionary = aruco.getPredefinedDictionary(dict_id)
+    else:
+        dictionary = aruco.Dictionary_get(dict_id)
+
+    if hasattr(aruco, "DetectorParameters"):
+        params = aruco.DetectorParameters()
+    else:
+        params = aruco.DetectorParameters_create()
+
+    if hasattr(aruco, "ArucoDetector"):
+        return aruco.ArucoDetector(dictionary, params)
+    return (dictionary, params)
+
+
+def _detect_aruco_tags(frame_gray, aruco_det) -> List[_TagDetection]:
+    if isinstance(aruco_det, tuple):
+        dictionary, params = aruco_det
+        corners, ids, _ = cv2.aruco.detectMarkers(frame_gray, dictionary, parameters=params)
+    else:
+        corners, ids, _ = aruco_det.detectMarkers(frame_gray)
+
+    if ids is None or len(ids) == 0:
+        return []
+
+    out: List[_TagDetection] = []
+    for i, tag_id in enumerate(ids.reshape(-1)):
+        pts = corners[i].reshape(4, 2)
+        cx = float(pts[:, 0].mean())
+        cy = float(pts[:, 1].mean())
+        out.append(_TagDetection(int(tag_id), (cx, cy), pts))
+    return out
+
+
+def _log_tag_detections(detections: List[Any]) -> None:
+    if not detections:
+        return
+
+    parts: List[str] = []
+    ids: List[int] = []
+    for det in detections:
+        try:
+            tag_id = int(det.tag_id)
+            c = det.center
+            ids.append(tag_id)
+            parts.append(f"id={tag_id} center=({float(c[0]):.0f},{float(c[1]):.0f})")
+        except Exception:
+            continue
+
+    if not ids:
+        return
+
+    now = time.time()
+    id_set = frozenset(ids)
+    changed = id_set != _tag_log_state["last_ids"]
+    if changed or (now - float(_tag_log_state["last_log_ts"])) >= 1.0:
+        print(f"[Project][ArUco] detected {len(ids)} tag(s): {', '.join(parts)}", flush=True)
+        _tag_log_state["last_ids"] = id_set
+        _tag_log_state["last_log_ts"] = now
+
+
+def _detect_apriltags(frame_gray) -> List[Any]:
+    if not _init_aruco_detector() or frame_gray is None or _aruco_detector is None:
+        return []
+
+    try:
+        detections = _detect_aruco_tags(frame_gray, _aruco_detector)
+        _log_tag_detections(detections)
+        return detections
+    except Exception as e:
+        print(f"[Project][ArUco] detect failed: {e}", flush=True)
+        return []
 
 
 def _extract_frame_gray(camera) -> Tuple[Optional[Any], Optional[Any]]:
@@ -206,15 +298,10 @@ def _extract_frame_gray(camera) -> Tuple[Optional[Any], Optional[Any]]:
     return frame, gray
 
 
-def _detect_apriltags(frame_gray) -> List[Any]:
-    detector = _get_apriltag_detector()
-    if detector is None or frame_gray is None:
-        return []
-    try:
-        return detector.detect(frame_gray)
-    except Exception as e:
-        print(f"[Project][AprilTag] detect failed: {e}")
-        return []
+def get_tag_detector_backend() -> Optional[str]:
+    """Return active backend name: 'aruco' or None."""
+    _init_aruco_detector()
+    return "aruco" if _aruco_detector is not None else None
 
 
 def _classify_event_from_detections(
@@ -421,7 +508,7 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             proposed = state
 
         if proposed != state:
-            print(f"[Project][Leader] transition {state} -> {proposed} ({event})")
+            print(f"[Project][Leader] transition {state} -> {proposed} ({event})", flush=True)
             state = proposed
 
         if state == STATE_STOPPING:
@@ -477,14 +564,15 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
         if now - last_log >= 2.0:
             print(
                 f"[Project][Leader] state={state} speed={current_speed:.2f} "
-                f"event={last_event} tags={last_tag_ids}"
+                f"event={last_event} tags={last_tag_ids}",
+                flush=True,
             )
             last_log = now
         time.sleep(dt)
 
     set_leader_status(build_status_payload(STATE_STOPPED, 0.0))
     _safe_stop(wheels)
-    print("[Project][Leader] Stopped.")
+    print("[Project][Leader] Stopped.", flush=True)
 
 
 def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
@@ -598,7 +686,7 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
                     )
 
         if mode != prev_mode:
-            print(f"[Project][Follower] transition {prev_mode} -> {mode}")
+            print(f"[Project][Follower] transition {prev_mode} -> {mode}", flush=True)
             prev_mode = mode
 
         if now - last_log >= 2.0:
@@ -606,13 +694,14 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             print(
                 f"[Project][Follower] mode={mode} target_speed={target_speed:.2f} cmd={commanded_speed:.2f} "
                 f"leader_state={state} age={age:.2f}s "
-                f"dist_signal={distance_signal} leader_tag_id={last_leader_tag_id}"
+                f"dist_signal={distance_signal} leader_tag_id={last_leader_tag_id}",
+                flush=True,
             )
             last_log = now
         time.sleep(dt)
 
     _safe_stop(wheels)
-    print("[Project][Follower] Stopped.")
+    print("[Project][Follower] Stopped.", flush=True)
 
 
 def set_hsv_bounds(yellow_lower, yellow_upper, white_lower, white_upper):

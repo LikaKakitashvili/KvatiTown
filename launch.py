@@ -352,6 +352,11 @@ def package_task(task_name):
             print(f"   Adding server: servers/{task_name}/")
             tar.add(task_server_dir, arcname=f'servers/{task_name}', filter=no_pycache)
 
+        common_py = os.path.join(PROJECT_ROOT, 'servers', 'common.py')
+        if os.path.exists(common_py):
+            print("   Adding server helper: servers/common.py")
+            tar.add(common_py, arcname='servers/common.py', filter=no_pycache)
+
         templates_dir = os.path.join(PROJECT_ROOT, 'servers', 'templates')
         if os.path.exists(templates_dir):
             print("   Adding templates: servers/templates/")

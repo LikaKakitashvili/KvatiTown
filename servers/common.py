@@ -1,7 +1,17 @@
 import logging
 import re
+import sys
 import time
 import cv2
+
+
+def configure_line_buffered_stdio() -> None:
+    """Flush each print line immediately when stdout is piped (e.g. bot dashboard)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except Exception:
+            pass
 
 
 class _HttpErrorsOnly(logging.Filter):

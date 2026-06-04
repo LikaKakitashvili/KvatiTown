@@ -26,6 +26,18 @@ from duckiebot.led_driver import LEDDriver
 from launcher.ports import find_available_port
 from servers.common import shutdown_cleanup, suppress_http_logs
 
+
+def _configure_line_buffered_stdio():
+    """Flush prints immediately when stdout is piped (bot dashboard log panel)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except Exception:
+            pass
+
+
+_configure_line_buffered_stdio()
+
 LANE_CONFIG_FILE = os.path.join(project_root, "config", "lane_servoing_config.yaml")
 LANE_HSV_CONFIG_FILE = os.path.join(project_root, "config", "lane_servoing_hsv_config.yaml")
 
