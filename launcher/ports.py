@@ -25,21 +25,25 @@ def find_available_port(start=5000, max_attempts=20, exclude=None):
     )
 
 
-def wait_for_port_file(path, timeout=15, poll_interval=0.25):
+def wait_for_port_file(path, timeout=15, poll_interval=0.25, required_keys=None):
     """Block until Godot writes its JSON port file, or timeout."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             with open(path, "r") as f:
                 data = json.load(f)
-            if isinstance(data, dict) and data:
-                return data
+            if not isinstance(data, dict) or not data:
+                raise ValueError("empty port file")
+            if required_keys is not None and not all(k in data for k in required_keys):
+                raise ValueError("missing keys")
+            return data
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             pass
         time.sleep(poll_interval)
 
+    keys_msg = f" with keys {required_keys}" if required_keys else ""
     raise TimeoutError(
-        f"Godot port file '{path}' not found after {timeout}s. "
+        f"Godot port file '{path}' not ready{keys_msg} after {timeout}s. "
         "Is Godot running?"
     )
                                                 

@@ -158,7 +158,16 @@ def find_godot():
     return download_godot()
 
 
-def launch_godot(godot_path=None, debug=False, camera_port=None, wheel_port_hint=None, port_file_path=None, scene=None):
+def launch_godot(
+    godot_path=None,
+    debug=False,
+    camera_port=None,
+    wheel_port_hint=None,
+    port_file_path=None,
+    scene=None,
+    follower_camera_port=None,
+    follower_wheel_port=None,
+):
     global godot_process
 
     if not godot_path:
@@ -198,12 +207,22 @@ def launch_godot(godot_path=None, debug=False, camera_port=None, wheel_port_hint
     else:
         godot_cmd = [godot_path, '--path', GODOT_PROJECT, godot_scene]
 
-    if camera_port is not None or wheel_port_hint is not None or port_file_path is not None:
+    if (
+        camera_port is not None
+        or wheel_port_hint is not None
+        or port_file_path is not None
+        or follower_camera_port is not None
+        or follower_wheel_port is not None
+    ):
         godot_cmd.append('--')
         if camera_port is not None:
             godot_cmd.append(f'--camera-port={camera_port}')
         if wheel_port_hint is not None:
             godot_cmd.append(f'--wheel-port={wheel_port_hint}')
+        if follower_camera_port is not None:
+            godot_cmd.append(f'--follower-camera-port={follower_camera_port}')
+        if follower_wheel_port is not None:
+            godot_cmd.append(f'--follower-wheel-port={follower_wheel_port}')
         if port_file_path is not None:
             godot_cmd.append(f'--port-file={port_file_path}')
 
@@ -253,6 +272,13 @@ def run_in_simulation(args):
         print(f"   Available tasks: {', '.join(GODOT_SCENES.keys())}")
         return 1
 
+    if args.convoy:
+        if task_name != "project":
+            print("❌ ERROR: --convoy is only supported with --task project")
+            return 1
+        from launcher.convoy_sim import run_convoy_simulation
+        return run_convoy_simulation(args, launch_godot, stop_godot, godot_scene)
+
     virtual_server_path = os.path.join(PROJECT_ROOT, 'servers', task_name, 'virtual_server.py')
     if not os.path.exists(virtual_server_path):
         print(f"❌ ERROR: No virtual server found at servers/{task_name}/virtual_server.py")
@@ -282,7 +308,7 @@ def run_in_simulation(args):
     print(f"Waiting for Godot to initialize (timeout: {godot_init_timeout}s)...")
     try:
         port_data = wait_for_port_file(port_file_path, timeout=godot_init_timeout)
-        wheel_port = port_data.get("wheel_port", wheel_port_hint)
+        wheel_port = int(port_data.get("wheel_port", wheel_port_hint))
         print(f"  Godot wheel port: {wheel_port}")
     except TimeoutError:
         if godot_process and godot_process.poll() is not None:
@@ -495,6 +521,8 @@ def main():
         epilog="""
 Examples:
   python launch.py --sim --task braitenberg
+  python launch.py --sim --task project
+  python launch.py --sim --task project --convoy
   python launch.py --sim --task braitenberg --debug
   python launch.py --run --bot kvati --task braitenberg
   python launch.py --run --host 192.168.1.100 --task introduction
@@ -503,6 +531,7 @@ Examples:
     )
 
     parser.add_argument("--sim",  action="store_true", help="Run in simulation")
+    parser.add_argument("--convoy", action="store_true", help="Run project convoy sim (leader + follower bots)")
     parser.add_argument("--run",  action="store_true", help="Deploy and run on hardware")
     parser.add_argument("--stop", action="store_true", help="Stop task on hardware")
 

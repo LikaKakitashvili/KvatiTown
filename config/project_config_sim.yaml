@@ -1,0 +1,37 @@
+# Simulation defaults for leader: python launch.py --sim --task project
+role: leader
+
+loop_hz: 20
+
+leader_host: 127.0.0.1
+leader_port: 5000
+
+cruise_speed: 0.24
+slow_speed: 0.14
+
+follower_max_speed: 0.24
+follower_min_speed: 0.0
+distance_target: 0.06
+distance_kp: 0.6
+
+status_publish_hz: 10
+status_poll_hz: 10
+request_timeout_s: 0.2
+leader_timeout_s: 0.4
+
+stop_hold_s: 2.0
+decel_time_s: 0.6
+decel_steps: 8
+
+# Tag classification is handled by resolve_tag() in sign_behavior_config.py:
+#   STOP  → IDs 20, 24, 25, 26
+#   YIELD → ID 39  (triggers STATE_SLOW)
+# These lists are kept for reference but not used by the agent directly.
+stop_tag_ids: [20, 24, 25, 26]
+slow_tag_ids: [39]
+
+sign_confirm_frames: 2
+sign_cooldown_s: 1.5
+
+# Vehicle AprilTags on leader back (400+) for follower distance keeping
+leader_tag_ids: [400, 401, 402]

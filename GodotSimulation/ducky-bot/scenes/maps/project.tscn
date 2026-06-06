@@ -6,10 +6,19 @@
 [ext_resource type="PackedScene" path="res://scenes/tiles/tile_cross3.tscn" id="4_y7vrc"]
 [ext_resource type="PackedScene" uid="uid://b7ugvo11ae2ss" path="res://scenes/objects/DuckieRagdool.tscn" id="5_ekvqd"]
 [ext_resource type="PackedScene" uid="uid://mo3nfx0lk1h3" path="res://scenes/objects/obj_stop_sign.tscn" id="6_n1yv4"]
-[ext_resource type="Texture2D" uid="uid://b3wgvj5kwquk4" path="res://textures/tag36h11/tag36_11_00001.png" id="7_xv6rw"]
+[ext_resource type="Texture2D" uid="uid://b3wgvj5kwquk4" path="res://textures/tag36h11/tag36_11_00020.png" id="7_xv6rw"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00021.png" id="7_tag21"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00022.png" id="7_tag22"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00023.png" id="7_tag23"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00024.png" id="7_tag24"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00025.png" id="7_tag25"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00026.png" id="7_tag26"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00027.png" id="7_tag27"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00028.png" id="7_tag28"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00039.png" id="7_tag39"]
 [ext_resource type="PackedScene" uid="uid://bm6eeklw3fh22" path="res://scenes/objects/obj_parking_sign.tscn" id="8_tw3f0"]
 [ext_resource type="PackedScene" uid="uid://by8pqr474iaqj" path="res://scenes/robot/duckie_bot.tscn" id="9_5xmy2"]
-[ext_resource type="Script" uid="uid://frrhxfeqwt4d" path="res://scripts/path_follow_3d.gd" id="11_ucdee"]
+[ext_resource type="Script" path="res://scripts/convoy_path_follower.gd" id="11_ucdee"]
 [ext_resource type="PackedScene" uid="uid://dsxbif155ikun" path="res://scenes/robot/duckie_bot_npc.tscn" id="12_3bncg"]
 
 [sub_resource type="Curve3D" id="Curve3D_xdp4q"]
@@ -231,87 +240,33 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.7, 0.091, 6.3)
 
 [node name="Ducks" type="Node3D" parent="." unique_id=103739618]
 
-[node name="Duck_3_4" parent="Ducks" unique_id=275832261 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.2319999, 0.13, 2.7)
-
-[node name="Duck_3_3" parent="Ducks" unique_id=1571319713 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.2319999, 0.13, 2.1)
-
-[node name="Duck_4_2" parent="Ducks" unique_id=1627823262 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 2.7, 0.13, 1.632)
-
-[node name="Duck_5_2" parent="Ducks" unique_id=1333820859 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 3.3, 0.13, 1.632)
-
-[node name="Duck_6_2" parent="Ducks" unique_id=50577574 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 3.9, 0.13, 1.632)
-
-[node name="Duck_7_2" parent="Ducks" unique_id=733101795 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 4.5, 0.13, 1.632)
-
-[node name="Duck_8_2" parent="Ducks" unique_id=1160172033 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 5.1, 0.13, 1.632)
-
-[node name="Duck_9_2" parent="Ducks" unique_id=1914979319 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 5.7, 0.13, 1.632)
-
-[node name="Duck_10_2" parent="Ducks" unique_id=890832263 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 6.3, 0.13, 1.632)
-
-[node name="Duck_7_8" parent="Ducks" unique_id=1200454843 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 4.5, 0.13, 5.232)
-
-[node name="Duck_5_9" parent="Ducks" unique_id=505832135 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 3.3, 0.13, 5.832)
-
-[node name="Duck_1_9" parent="Ducks" unique_id=1925057966 instance=ExtResource("5_ekvqd")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.032, 0.13, 5.7)
-
 [node name="Signs" type="Node3D" parent="." unique_id=443405961]
 
-[node name="Sign_12_4" parent="Signs" unique_id=1575506644 instance=ExtResource("6_n1yv4")]
-transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 7.2, 0.091, 2.4)
-sign_texture = ExtResource("7_xv6rw")
+[node name="StopSign_1" parent="Signs" unique_id=914577601 instance=ExtResource("6_n1yv4")]
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 1.8, 0.091, 2.9)
+sign_texture = ExtResource("7_tag26")
 
-[node name="Sign_4_6" parent="Signs" unique_id=914577599 instance=ExtResource("6_n1yv4")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.4, 0.091, 3.6)
+[node name="StopSign_2" parent="Signs" unique_id=914577603 instance=ExtResource("6_n1yv4")]
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 1.8, 0.091, 3.8)
+sign_texture = ExtResource("7_tag26")
 
-[node name="Sign_10_9" parent="Signs" unique_id=50444080 instance=ExtResource("6_n1yv4")]
-transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 6, 0.091, 5.4)
-
-[node name="Sign_10_10" parent="Signs" unique_id=338324099 instance=ExtResource("6_n1yv4")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 0.091, 6)
-
-[node name="Sign_9_10" parent="Signs" unique_id=1921600219 instance=ExtResource("6_n1yv4")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 5.4, 0.091, 6)
-
-[node name="Sign_9_9" parent="Signs" unique_id=1516801057 instance=ExtResource("6_n1yv4")]
-transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 5.4, 0.091, 5.4)
-
-[node name="Sign_11_5" parent="Signs" unique_id=843150894 instance=ExtResource("6_n1yv4")]
-transform = Transform3D(1.1924881e-08, 0, -1, 0, 1, 0, 1, 0, 1.1924881e-08, 6.6, 0.091, 3)
-
-[node name="Sign_11_4" parent="Signs" unique_id=1722985175 instance=ExtResource("6_n1yv4")]
-transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 6.6, 0.091, 2.4)
-
-[node name="Sign_1_10" parent="Signs" unique_id=882736530 instance=ExtResource("8_tw3f0")]
-transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0.6, 0.091, 6)
+[node name="YieldSign_1" parent="Signs" unique_id=914577602 instance=ExtResource("6_n1yv4")]
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 1.8, 0.091, 4.7)
+sign_texture = ExtResource("7_tag39")
 
 [node name="DuckieBot" parent="." unique_id=865415826 instance=ExtResource("9_5xmy2")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.832, 0.155, 6.3)
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 1.968, 0.155, 2.4)
+bot_id = "leader"
+
+[node name="DuckieBotFollower" parent="." instance=ExtResource("9_5xmy2")]
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 1.968, 0.155, 1.8)
+bot_id = "follower"
+CameraPort = 5011
+WheelPort = 5012
 
 [node name="TopView" type="Camera3D" parent="DuckieBot" unique_id=1887255741]
 transform = Transform3D(1, 0, 0, 0, 0.34202015, 0.9396926, 0, -0.9396926, 0.34202015, 0, 1, 0.8)
 current = true
-
-[node name="NPCPath" type="Path3D" parent="." unique_id=119113309]
-curve = SubResource("Curve3D_xdp4q")
-
-[node name="PathFollower" type="PathFollow3D" parent="NPCPath" unique_id=1750397961]
-transform = Transform3D(1, 0, 0, 0, 0.97799283, 0.20863852, 0, -0.20863852, 0.97799283, 8.232, 0.155, 3.3)
-script = ExtResource("11_ucdee")
-
-[node name="DuckieBot_NPC" parent="NPCPath/PathFollower" unique_id=95641081 instance=ExtResource("12_3bncg")]
 
 [node name="Sun" type="DirectionalLight3D" parent="." unique_id=1159425448]
 transform = Transform3D(0.8660254, -0.4829629, 0.12940954, 0, 0.25881907, 0.9659258, -0.5, -0.83651626, 0.22414389, 4.8, 20, 4.8)

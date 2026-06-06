@@ -13,26 +13,21 @@ _CONFIG_FILE = os.path.normpath(os.path.join(
 ))
 
 _LINE_OFFSET = 160
-_ROI_START = 0.47
-_ROI_SLICE_BAND = 0.35
-_NUM_SLICES = 3
-_SLICE_TOL = 5
+_ROI_START   = 0.47
+_NUM_SLICES  = 3
+_SLICE_TOL   = 5
 
 
 def detect_lines_in_slices(
     mask_yellow: np.ndarray,
-    mask_white: np.ndarray,
+    mask_white:  np.ndarray,
     h: int,
-    roi_start: float = _ROI_START,
-    roi_slice_band: float = _ROI_SLICE_BAND,
-    num_slices: int = _NUM_SLICES,
 ) -> Tuple[list, list]:
-    """Same slice layout as tasks/visual_lane_servoing/packages/agent.py."""
-    slice_height = int(h * roi_slice_band / num_slices)
-    start_y = int(h * roi_start)
+    slice_height = int(h * 0.35 / _NUM_SLICES)
+    start_y      = int(h * _ROI_START)
     yellow_xs, white_xs = [], []
 
-    for i in range(num_slices):
+    for i in range(_NUM_SLICES):
         y = start_y + i * slice_height + slice_height // 2
 
         strip_y = mask_yellow[y - _SLICE_TOL: y + _SLICE_TOL, :]
@@ -58,42 +53,28 @@ class LaneServoingAgent:
         except Exception:
             cfg = {}
 
-        self.p_gain = cfg.get('p_gain', 0.1)
-        self.d_gain = cfg.get('d_gain', 0.35)
-        self.max_steer = cfg.get('max_steer', 0.4)
-        self.base_speed = cfg.get('base_speed', 0.2)
-        self.curve_speed = cfg.get('curve_speed', 0.2)
-        self.curve_threshold = cfg.get('curve_threshold', 350)
-        self.steering_threshold = cfg.get('steering_threshold', 0.2)
-        self.curve_boost = cfg.get('curve_boost', 1.3)
-        self.detection_threshold = cfg.get('detection_threshold', 500)
+        self.p_gain              = cfg.get('p_gain',              0.07)
+        self.d_gain              = cfg.get('d_gain',              0.18)
+        self.max_steer           = cfg.get('max_steer',           0.4)
+        self.base_speed          = cfg.get('base_speed',          0.2)
+        self.curve_speed         = cfg.get('curve_speed',         0.2)
+        self.curve_threshold     = cfg.get('curve_threshold',     350)
+        self.steering_threshold  = cfg.get('steering_threshold',  0.2)
+        self.curve_boost         = cfg.get('curve_boost',         1.3)
+        self.detection_threshold = cfg.get('detection_threshold', 100)
 
-        self.roi_start = float(cfg.get('roi_start', _ROI_START))
-        self.roi_slice_band = float(cfg.get('roi_slice_band', _ROI_SLICE_BAND))
-        self.num_slices = max(1, int(cfg.get('num_slices', _NUM_SLICES)))
-
-        self.frame_count = 0
-        self._prev_error = 0.0
-        self._filtered_error = 0.0
+        self.frame_count      = 0
+        self._prev_error      = 0.0
+        self._filtered_error  = 0.0
         self._lane_half_width = float(_LINE_OFFSET)
-        self._left_history = deque(maxlen=3)
-        self._right_history = deque(maxlen=3)
-        self.last_debug_info = self._empty_debug_info(480, 640)
-
-    def _roi_bounds(self, h: int, w: int) -> Tuple[int, int, int, int]:
-        y0 = int(h * self.roi_start)
-        y1 = min(h, y0 + int(h * self.roi_slice_band))
-        return y0, y1, 0, w
-
-    def _slice_ys(self, h: int) -> list:
-        slice_height = int(h * self.roi_slice_band / self.num_slices)
-        start_y = int(h * self.roi_start)
-        return [start_y + i * slice_height + slice_height // 2 for i in range(self.num_slices)]
+        self._left_history    = deque(maxlen=3)
+        self._right_history   = deque(maxlen=3)
+        self.last_debug_info  = self._empty_debug_info(480, 640)
 
     def _calculate_error(self, yellow_xs, white_xs, left_det, right_det, w):
         if left_det and right_det and yellow_xs and white_xs:
-            y_mean = float(np.mean(yellow_xs))
-            w_mean = float(np.mean(white_xs))
+            y_mean   = float(np.mean(yellow_xs))
+            w_mean   = float(np.mean(white_xs))
             measured = (w_mean - y_mean) / 2.0
             if measured > 20:
                 self._lane_half_width = 0.9 * self._lane_half_width + 0.1 * measured
@@ -108,7 +89,7 @@ class LaneServoingAgent:
         return float(np.clip(error / (w / 2.0), -1.0, 1.0))
 
     def _calculate_steering(self, error: float) -> float:
-        error_diff = error - self._prev_error
+        error_diff       = error - self._prev_error
         self._prev_error = error
         steering = self.p_gain * error + self.d_gain * error_diff
         return float(np.clip(steering, -self.max_steer, self.max_steer))
@@ -118,93 +99,82 @@ class LaneServoingAgent:
             return 0.0, 0.0
 
         speed = self.curve_speed if is_curve else self.base_speed
+
         if not both_visible:
             speed *= 0.8
 
-        left = speed - steering
+        left  = speed - steering
         right = speed + steering
 
         if is_curve and abs(steering) > self.steering_threshold:
             if steering > 0:
                 right *= 5
             else:
-                left *= self.curve_boost
+                left  *= self.curve_boost
 
         return float(np.clip(left, 0.0, 1.0)), float(np.clip(right, 0.0, 1.0))
 
     def _smooth(self, left, right, both_visible):
         buf = 2 if both_visible else 1
         if self._left_history.maxlen != buf:
-            self._left_history = deque(maxlen=buf)
+            self._left_history  = deque(maxlen=buf)
             self._right_history = deque(maxlen=buf)
         self._left_history.append(left)
         self._right_history.append(right)
-        return (
-            sum(self._left_history) / len(self._left_history),
-            sum(self._right_history) / len(self._right_history),
-        )
+        return (sum(self._left_history)  / len(self._left_history),
+                sum(self._right_history) / len(self._right_history))
 
-    def compute_commands(self, image: np.ndarray, bgr_input: bool = True) -> Tuple[float, float]:
-        """BGR in by default (CameraDriver); same control flow as visual_lane_servoing agent."""
+    def compute_commands(self, image: np.ndarray, bgr_input: bool = False) -> Tuple[float, float]:
         self.frame_count += 1
         bgr = image if bgr_input else cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
         try:
             mask_left, mask_right = student.detect_lane_markings(bgr)
-            yellow_color_mask, white_color_mask = student.get_color_masks(bgr)
         except Exception as e:
             print(f"[Agent] detect_lane_markings error: {e}")
             return 0.0, 0.0
 
-        mask_y = (mask_left * 255).astype(np.uint8)
+        mask_y = (mask_left  * 255).astype(np.uint8)
         mask_w = (mask_right * 255).astype(np.uint8)
 
         yellow_pixels = int(np.count_nonzero(mask_y))
-        white_pixels = int(np.count_nonzero(mask_w))
-        total_pixels = yellow_pixels + white_pixels
+        white_pixels  = int(np.count_nonzero(mask_w))
+        total_pixels  = yellow_pixels + white_pixels
 
-        combined = np.clip(mask_left + mask_right, 0, 1)
-        h, w = mask_y.shape
-        y0, y1, x0, x1 = self._roi_bounds(h, w)
-
+        combined = np.clip(mask_left + mask_right, 0, 255).astype(np.uint8)
         self.last_debug_info = {
-            'roi': bgr,
-            'lane_mask': (combined * 255).astype(np.uint8),
-            'white_mask': white_color_mask,
-            'yellow_mask': yellow_color_mask,
+            'roi':               bgr,
+            'lane_mask':         combined,
+            'white_mask':        mask_w,
+            'yellow_mask':       mask_y,
             'total_lane_pixels': total_pixels,
-            'lateral_error': float(np.clip(self._prev_error, -1.0, 1.0)),
-            'lane_detected': total_pixels >= self.detection_threshold,
-            'frame_count': self.frame_count,
-            'roi_bounds': (y0, y1, x0, x1),
+            'lateral_error':     float(np.clip(self._prev_error, -1.0, 1.0)),
+            'lane_detected':     total_pixels >= self.detection_threshold,
+            'frame_count':       self.frame_count,
         }
 
-        left_det = yellow_pixels > 0
-        right_det = white_pixels > 0
-        recovery = total_pixels < self.detection_threshold
+        h, w      = mask_y.shape
+        left_det  = yellow_pixels > 0
+        right_det = white_pixels  > 0
+        recovery  = total_pixels  < self.detection_threshold
 
-        yellow_xs, white_xs = detect_lines_in_slices(
-            mask_y,
-            mask_w,
-            h,
-            roi_start=self.roi_start,
-            roi_slice_band=self.roi_slice_band,
-            num_slices=self.num_slices,
-        )
-        both_visible = left_det and right_det and not recovery
+        yellow_xs, white_xs = detect_lines_in_slices(mask_y, mask_w, h)
+        both_visible        = left_det and right_det and not recovery
         is_curve, curve_dir = detect_curve(yellow_xs, white_xs, self.curve_threshold)
 
-        raw_error = self._calculate_error(yellow_xs, white_xs, left_det, right_det, w)
+        raw_error            = self._calculate_error(yellow_xs, white_xs, left_det, right_det, w)
         self._filtered_error = 0.7 * self._filtered_error + 0.3 * raw_error
-        steering = self._calculate_steering(self._filtered_error)
-        left, right = self._motor_commands(steering, recovery, is_curve, both_visible)
-        left, right = self._smooth(left, right, both_visible)
+        steering             = self._calculate_steering(self._filtered_error)
+        left, right          = self._motor_commands(steering, recovery, is_curve, both_visible)
+        left, right          = self._smooth(left, right, both_visible)
 
+        slice_height = int(h * 0.35 / _NUM_SLICES)
+        start_y      = int(h * _ROI_START)
         self.last_debug_info.update({
             'yellow_xs': yellow_xs,
-            'white_xs': white_xs,
-            'slice_ys': self._slice_ys(h),
-            'is_curve': is_curve,
+            'white_xs':  white_xs,
+            'slice_ys':  [start_y + i * slice_height + slice_height // 2 for i in range(_NUM_SLICES)],
+            'is_curve':  is_curve,
             'curve_dir': curve_dir,
         })
 
@@ -220,12 +190,12 @@ class LaneServoingAgent:
 
     def _empty_debug_info(self, h, w):
         return {
-            'roi': np.zeros((h, w, 3), dtype=np.uint8),
-            'lane_mask': np.zeros((h, w), dtype=np.uint8),
-            'white_mask': np.zeros((h, w), dtype=np.uint8),
-            'yellow_mask': np.zeros((h, w), dtype=np.uint8),
+            'roi':               np.zeros((h, w, 3), dtype=np.uint8),
+            'lane_mask':         np.zeros((h, w),    dtype=np.uint8),
+            'white_mask':        np.zeros((h, w),    dtype=np.uint8),
+            'yellow_mask':       np.zeros((h, w),    dtype=np.uint8),
             'total_lane_pixels': 0,
-            'lateral_error': 0.0,
-            'lane_detected': False,
-            'frame_count': 0,
+            'lateral_error':     0.0,
+            'lane_detected':     False,
+            'frame_count':       0,
         }

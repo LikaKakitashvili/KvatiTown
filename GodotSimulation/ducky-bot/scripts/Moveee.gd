@@ -6,6 +6,7 @@ extends CharacterBody3D
 @export var max_turn_rate: float = 8.0   # Max radians/sec (match omega_max from calibration)
 @export var WheelPort = 5002
 @export var CameraPort = 5001
+@export var bot_id: String = "leader"
 @export var  RotateOnStart = false
 
 var port_file_path: String = ""
@@ -16,13 +17,19 @@ var _current_omega: float = 0.0
 
 func _enter_tree() -> void:
 	for arg in OS.get_cmdline_user_args():
-		if arg.begins_with("--camera-port="):
-			CameraPort = int(arg.split("=")[1])
-		elif arg.begins_with("--wheel-port="):
-			WheelPort = int(arg.split("=")[1])
-		elif arg.begins_with("--port-file="):
+		if arg.begins_with("--port-file="):
 			port_file_path = arg.split("=")[1]
-	print("[Robot] Ports from CLI: camera=", CameraPort, " wheel_hint=", WheelPort, " port_file=", port_file_path)
+		elif bot_id == "follower":
+			if arg.begins_with("--follower-camera-port="):
+				CameraPort = int(arg.split("=")[1])
+			elif arg.begins_with("--follower-wheel-port="):
+				WheelPort = int(arg.split("=")[1])
+		else:
+			if arg.begins_with("--camera-port="):
+				CameraPort = int(arg.split("=")[1])
+			elif arg.begins_with("--wheel-port="):
+				WheelPort = int(arg.split("=")[1])
+	print("[Robot][%s] Ports: camera=%d wheel_hint=%d port_file=%s" % [bot_id, CameraPort, WheelPort, port_file_path])
 
 var initial_position: Vector3
 var initial_rotation: Vector3

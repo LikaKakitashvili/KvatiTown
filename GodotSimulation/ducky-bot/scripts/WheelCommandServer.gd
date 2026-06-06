@@ -37,14 +37,24 @@ func _ready() -> void:
 
 	print("[Godot] Wheel server listening on port ", port)
 
-	# Write the actual port to a JSON file so Python can discover it
+	# Merge wheel port into shared JSON file for Python (leader + follower convoy sim)
 	var port_file: String = parent.port_file_path
 	if port_file != "":
-		var f := FileAccess.open(port_file, FileAccess.WRITE)
-		if f:
-			f.store_string(JSON.stringify({"wheel_port": port}))
-			f.close()
-			print("[WheelServer] Wrote port file: ", port_file)
+		var port_key := "follower_wheel_port" if str(parent.bot_id) == "follower" else "wheel_port"
+		var data: Dictionary = {}
+		if FileAccess.file_exists(port_file):
+			var rf := FileAccess.open(port_file, FileAccess.READ)
+			if rf:
+				var parsed = JSON.parse_string(rf.get_as_text())
+				if typeof(parsed) == TYPE_DICTIONARY:
+					data = parsed
+				rf.close()
+		data[port_key] = int(port)
+		var wf := FileAccess.open(port_file, FileAccess.WRITE)
+		if wf:
+			wf.store_string(JSON.stringify(data))
+			wf.close()
+			print("[WheelServer][%s] Wrote %s=%d to %s" % [parent.bot_id, port_key, port, port_file])
 		else:
 			push_warning("[WheelServer] Could not write port file: %s" % port_file)
 

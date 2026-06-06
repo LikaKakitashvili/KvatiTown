@@ -1,0 +1,47 @@
+# Duckietown traffic sign AprilTag mapping (tag36h11 family, IDs 1-199).
+# Source: Signs_and_tags_2017.pdf / dt-core apriltagsDB.yaml
+#
+# Used by tasks/project/packages/agent.py via project_config*.yaml:
+#   stop_tag_ids  -> full stop at stop signs
+#   slow_tag_ids  -> reduced speed (yield / caution signs)
+
+sign_families:
+  apriltag: tag36h11
+
+traffic_signs:
+  stop:
+    tag_ids: [20, 21, 22, 23, 24, 25, 26, 27, 28]
+    behavior: stop
+    description: STOP sign (8-way intersection variants)
+
+  yield:
+    tag_ids: [39]
+    behavior: slow
+    description: YIELD sign — project treats as slow-down sign
+
+  four_way:
+    tag_ids: [231, 232, 233, 234, 262, 263, 264]
+    behavior: informational
+    description: Four-way intersection topology signs
+
+  t_intersection:
+    tag_ids: [236, 239, 243, 246, 247]
+    behavior: informational
+    description: T-intersection topology signs
+
+  t_light_ahead:
+    tag_ids: [200, 201, 202, 203, 204, 205, 206, 207, 208, 209]
+    behavior: slow
+    description: Traffic light ahead — optional slow-down trigger
+
+vehicle_tags:
+  range: [400, 439]
+  description: AprilTags on robot backs for convoy distance keeping
+
+localization_tags:
+  range: [300, 399]
+  description: Floor localization tags (not traffic signs)
+
+street_name_tags:
+  range: [440, 587]
+  description: Street name signs (BARFOOT ST, DUDEK ST, etc.)
