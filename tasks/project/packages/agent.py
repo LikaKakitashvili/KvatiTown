@@ -6,24 +6,41 @@ import cv2
 import numpy as np
 
 
-# OpenCV patternSize = (circles per row, number of rows)
 PATTERN_SIZE = (7, 3)
 
 
 @dataclass
 class CircleGridFollowConfig:
     base_speed: float = 0.25
-    steer_gain: float = 0.45
+    hold_speed: float = 0.10
+    steer_gain: float = 0.28
 
-    # Apparent grid width at the desired follow distance (tune on the bot)
     target_width_px: float = 110.0
-    width_gain: float = 0.003
-    width_deadband_px: float = 10.0
+    width_gain: float = 0.002
+    width_deadband_px: float = 12.0
     max_speed: float = 0.40
+
+    # Ignore small lateral offset (fraction of half-frame width)
+    steer_deadband: float = 0.10
+
+    # Low-pass filter: higher = snappier, lower = smoother
+    smooth_alpha: float = 0.35
+
+
+@dataclass
+class FollowState:
+    cx_smooth: Optional[float] = None
+    width_smooth: Optional[float] = None
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return lo if x < lo else hi if x > hi else x
+
+
+def _smooth(value: float, prev: Optional[float], alpha: float) -> float:
+    if prev is None:
+        return value
+    return alpha * value + (1.0 - alpha) * prev
 
 
 def _blob_detector() -> cv2.SimpleBlobDetector:
@@ -34,18 +51,13 @@ def _blob_detector() -> cv2.SimpleBlobDetector:
     params.filterByCircularity = True
     params.minCircularity = 0.30
     params.filterByColor = True
-    params.blobColor = 0  # dark dots on white plate
+    params.blobColor = 0
     return cv2.SimpleBlobDetector_create(params)
 
 
 def _detect_circle_grid(
     frame_bgr: np.ndarray,
 ) -> Tuple[bool, Optional[Tuple[float, float]], Optional[float]]:
-    """
-    Detect the 7x3 dot grid on the lead robot.
-
-    Returns (found, center_xy, width_px).
-    """
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
@@ -70,18 +82,37 @@ def _braitenberg_commands(
     width_px: float,
     frame_width: int,
     cfg: CircleGridFollowConfig,
+    state: FollowState,
 ) -> Tuple[float, float]:
-    """Steer toward the grid centre and adjust speed to hold a gap."""
-    # Pattern right of centre -> speed up left wheel -> turn right into it.
-    x_norm = (cx - frame_width * 0.5) / (frame_width * 0.5)
-    turn = _clamp(cfg.steer_gain * x_norm, -0.5, 0.5)
+    state.cx_smooth = _smooth(cx, state.cx_smooth, cfg.smooth_alpha)
+    state.width_smooth = _smooth(width_px, state.width_smooth, cfg.smooth_alpha)
 
-    width_err = cfg.target_width_px - width_px
-    if abs(width_err) <= cfg.width_deadband_px:
-        v = cfg.base_speed
+    cx_use = state.cx_smooth
+    width_use = state.width_smooth
+
+    x_norm = (cx_use - frame_width * 0.5) / (frame_width * 0.5)
+    if abs(x_norm) < cfg.steer_deadband:
+        x_norm = 0.0
+
+    width_err = cfg.target_width_px - width_use
+    if width_err > cfg.width_deadband_px:
+        v = cfg.base_speed + cfg.width_gain * (width_err - cfg.width_deadband_px)
+    elif width_err < -cfg.width_deadband_px:
+        v = 0.0
     else:
-        v = cfg.base_speed + cfg.width_gain * width_err
+        v = cfg.hold_speed
+
     v = _clamp(v, 0.0, cfg.max_speed)
+
+    turn = cfg.steer_gain * x_norm
+    if v < 0.05:
+        turn = 0.0
+    else:
+        turn *= v / cfg.base_speed
+        turn = _clamp(turn, -0.35, 0.35)
+
+    if v < 0.05 and x_norm == 0.0:
+        return 0.0, 0.0
 
     left = _clamp(v + turn, -1.0, 1.0)
     right = _clamp(v - turn, -1.0, 1.0)
@@ -90,6 +121,7 @@ def _braitenberg_commands(
 
 def main(camera, wheels, leds, stop_event):
     cfg = CircleGridFollowConfig()
+    state = FollowState()
 
     wheels.set_wheels_speed(0.0, 0.0)
 
@@ -107,12 +139,16 @@ def main(camera, wheels, leds, stop_event):
             found, center, width_px = _detect_circle_grid(frame)
 
             if not found or center is None or width_px is None or width_px <= 1.0:
+                state.cx_smooth = None
+                state.width_smooth = None
                 wheels.set_wheels_speed(0.0, 0.0)
                 time.sleep(0.02)
                 continue
 
             cx, _cy = center
-            left, right = _braitenberg_commands(cx, width_px, frame.shape[1], cfg)
+            left, right = _braitenberg_commands(
+                cx, width_px, frame.shape[1], cfg, state,
+            )
             wheels.set_wheels_speed(left, right)
             time.sleep(0.02)
     finally:
