@@ -3,7 +3,7 @@ role: follower
 loop_hz: 20
 
 # Set this to your leader's hostname or IP
-leader_host: 172.20.10.4
+leader_host: 172.20.10.3
 leader_port: 5000
 
 cruise_speed: 0.48
