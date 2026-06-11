@@ -16,7 +16,7 @@ import numpy as np
 import yaml
 
 from servers.project.visualization import create_lane_visualization
-from servers.templates.lane_servoing import LANE_SERVOING_TEMPLATE as HTML_TEMPLATE
+from servers.templates.convoy import CONVOY_TEMPLATE as HTML_TEMPLATE
 import tasks.project.packages.agent as project_agent
 
 from duckiebot.camera_driver import CameraDriver
@@ -311,12 +311,14 @@ def status():
     if _debug_info is None:
         _debug_info = getattr(agent, "last_debug_info", None)
     _frame_count = int(_debug_info.get("frame_count", 0)) if isinstance(_debug_info, dict) else 0
+    cfg = project_agent.load_config()
     return jsonify(
         {
             "status": "active",
             "camera_ready": _camera_ready,
             "running": running,
             "frame_count": _frame_count,
+            "role": cfg.get("role", "leader"),
             "convoy_state": leader.get("state", "STOPPED"),
             "convoy_speed": float(leader.get("speed", 0.0)),
             "convoy_ts": float(leader.get("ts", 0.0)),
