@@ -21,7 +21,7 @@ def _apply_hsv_config(h: dict) -> None:
     global _yellow_lower, _yellow_upper, _yellow_alt_lower, _yellow_alt_upper
     global _white_lower, _white_upper
     global _yellow_side_width_frac, _white_side_width_frac, _yellow_center_exclude_frac
-    global _edge_mag_threshold, _use_white_balance
+    global _edge_mag_threshold, _use_white_balance, _top_exclude_frac
 
     _yellow_lower = np.array([
         h.get('yellow_lower_h', 8), h.get('yellow_lower_s', 30), h.get('yellow_lower_v', 40),
@@ -46,6 +46,7 @@ def _apply_hsv_config(h: dict) -> None:
     _yellow_center_exclude_frac = float(h.get('yellow_center_exclude_frac', 0.18))
     _edge_mag_threshold = float(h.get('edge_mag_threshold', 28))
     _use_white_balance = bool(h.get('use_white_balance', True))
+    _top_exclude_frac = float(h.get('top_exclude_frac', 0.0))
 
 
 _apply_hsv_config(_load_hsv_config())
@@ -53,6 +54,18 @@ _apply_hsv_config(_load_hsv_config())
 
 def reload_hsv_config() -> None:
     _apply_hsv_config(_load_hsv_config())
+
+
+def _top_exclude_row(h: int) -> int:
+    frac = max(0.0, min(0.9, float(_top_exclude_frac)))
+    return int(np.floor(h * frac))
+
+
+def _mask_top_rows(mask: np.ndarray) -> np.ndarray:
+    cut = _top_exclude_row(mask.shape[0])
+    if cut > 0:
+        mask[:cut, :] = False
+    return mask
 
 
 def _correct_white_balance(bgr: np.ndarray) -> np.ndarray:
@@ -83,7 +96,7 @@ def _yellow_color_mask(img_hsv: np.ndarray) -> np.ndarray:
 
     m_u8 = (m.astype(np.uint8) * 255)
     m_u8 = cv2.morphologyEx(m_u8, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    return m_u8 > 0
+    return _mask_top_rows(m_u8 > 0)
 
 
 def _white_color_mask(img_hsv: np.ndarray) -> np.ndarray:
@@ -91,7 +104,7 @@ def _white_color_mask(img_hsv: np.ndarray) -> np.ndarray:
     m = cv2.inRange(img_hsv, _white_lower, _white_upper) > 0
     white_start = int(np.floor(w * (1.0 - _white_side_width_frac)))
     m[:, 0:white_start] = False
-    return m
+    return _mask_top_rows(m)
 
 
 def get_color_masks(bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -131,6 +144,12 @@ def detect_lane_markings(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
     mask_yellow = _yellow_color_mask(img_hsv)
     mask_white = _white_color_mask(img_hsv)
+
+    top_cut = _top_exclude_row(img_gray.shape[0])
+    if top_cut > 0:
+        mask_left[:top_cut, :] = 0
+        mask_right[:top_cut, :] = 0
+        mask_mag[:top_cut, :] = False
 
     mask_left_edge = mask_left * mask_mag * mask_sobelx_neg * mask_sobely_neg * mask_yellow
     mask_right_edge = mask_right * mask_mag * mask_sobelx_pos * mask_sobely_neg * mask_white
