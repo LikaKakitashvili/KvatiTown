@@ -60,6 +60,12 @@ _sign_runtime = {
     "active_until": 0.0,
 }
 
+# Pending sign confirmed while still visible — fires when sign exits frame.
+_sign_approach = {
+    "pending_event": EVENT_NORMAL,
+    "confirmed": False,
+}
+
 _lane_agent: Optional[LaneServoingAgent] = None
 
 _viz_lock = threading.Lock()
@@ -198,36 +204,49 @@ def _classify_tags(confirmed_ids: List[int]) -> str:
     return EVENT_NORMAL
 
 
-def detect_sign_event(confirmed_ids: List[int], cfg: Dict[str, Any]) -> str:
+def detect_sign_event(confirmed_ids, cfg):
     """
-    Debounce confirmed IDs into a sign event.
-    Requires sign_confirm_frames consecutive confirmed detections before
-    firing, then locks in the event for sign_cooldown_s seconds so the
-    same sign does not retrigger immediately.
+    Fires stop/slow only when the sign EXITS the camera frame.
+    While the sign is visible the bot keeps cruising; the action fires
+    the moment no sign is seen after one was confirmed.
     """
     confirm_frames = max(1, int(cfg.get("sign_confirm_frames", 2)))
-    cooldown_s     = max(0.0, float(cfg.get("sign_cooldown_s", 3.0)))
+    cooldown_s     = max(0.0, float(cfg.get("sign_cooldown_s", 1.5)))
 
     raw_event = _classify_tags(confirmed_ids)
+    now       = time.time()
 
-    now = time.time()
+    # During cooldown after an action, suppress everything.
     if now < float(_sign_runtime["active_until"]):
-        return str(_sign_runtime["candidate_event"])
-
-    if raw_event == EVENT_NORMAL:
-        _sign_runtime["candidate_event"] = EVENT_NORMAL
-        _sign_runtime["candidate_count"] = 0
         return EVENT_NORMAL
 
-    if _sign_runtime["candidate_event"] == raw_event:
-        _sign_runtime["candidate_count"] = int(_sign_runtime["candidate_count"]) + 1
-    else:
-        _sign_runtime["candidate_event"] = raw_event
-        _sign_runtime["candidate_count"] = 1
+    if raw_event != EVENT_NORMAL:
+        # Sign visible — accumulate confirmation frames.
+        if _sign_runtime["candidate_event"] == raw_event:
+            _sign_runtime["candidate_count"] = int(_sign_runtime["candidate_count"]) + 1
+        else:
+            _sign_runtime["candidate_event"] = raw_event
+            _sign_runtime["candidate_count"] = 1
 
-    if int(_sign_runtime["candidate_count"]) >= confirm_frames:
-        _sign_runtime["active_until"] = now + cooldown_s
-        return raw_event
+        if int(_sign_runtime["candidate_count"]) >= confirm_frames:
+            _sign_approach["pending_event"] = raw_event
+            _sign_approach["confirmed"]     = True
+
+        return EVENT_NORMAL  # keep cruising while sign is in view
+
+    # Sign no longer visible.
+    if _sign_approach["confirmed"] and _sign_approach["pending_event"] != EVENT_NORMAL:
+        # Fire the stored action now that the sign has left the frame.
+        action = _sign_approach["pending_event"]
+        _sign_approach["pending_event"] = EVENT_NORMAL
+        _sign_approach["confirmed"]     = False
+        _sign_runtime["candidate_event"] = EVENT_NORMAL
+        _sign_runtime["candidate_count"] = 0
+        _sign_runtime["active_until"]    = now + cooldown_s
+        return action
+
+    _sign_runtime["candidate_event"] = EVENT_NORMAL
+    _sign_runtime["candidate_count"] = 0
     return EVENT_NORMAL
 
 
@@ -379,16 +398,6 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
 
         last_tag_ids = list(confirmed_ids)
 
-        # If the stop timer just expired, flush the sign runtime BEFORE
-        # classifying this frame — otherwise the still-visible sign immediately
-        # re-triggers STATE_STOPPING and the bot never resumes.
-        # Use a short fixed cooldown (1.5 s) so the bot clears the stop sign
-        # visually without blocking the next different sign (yield etc.).
-        if state == STATE_STOPPED and now >= stop_until:
-            _sign_runtime["active_until"]    = now + 1.5
-            _sign_runtime["candidate_event"] = EVENT_NORMAL
-            _sign_runtime["candidate_count"] = 0
-
         event      = detect_sign_event(confirmed_ids, cfg)
         last_event = event
 
@@ -411,9 +420,6 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             current_speed = 0.0
             _safe_stop(wheels)
             if now >= stop_until:
-                # Timer done — resume unconditionally.
-                # Reset sign runtime so the same sign (still visible) doesn't
-                # immediately re-trigger a new stop.
                 cooldown_s = float(cfg.get("sign_cooldown_s", 4.0))
                 _sign_runtime["active_until"]    = now + cooldown_s
                 _sign_runtime["candidate_event"] = EVENT_NORMAL

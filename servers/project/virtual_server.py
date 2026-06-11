@@ -21,7 +21,7 @@ from duckiebot.wheel_driver.wheels_driver_abs import WheelPWMConfiguration
 from launcher.ports import find_available_port
 from servers.common import shutdown_cleanup, suppress_http_logs
 from servers.project.visualization import create_lane_visualization
-from servers.templates.convoy import CONVOY_TEMPLATE as HTML_TEMPLATE
+from servers.templates.lane_servoing import LANE_SERVOING_TEMPLATE as HTML_TEMPLATE
 import tasks.project.packages.agent as project_agent
 
 SIM_CONFIG = os.path.join(project_root, "config", "project_config_sim.yaml")
