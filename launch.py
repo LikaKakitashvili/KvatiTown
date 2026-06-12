@@ -13,6 +13,7 @@ import stat
 from pathlib import Path
 
 import requests
+import yaml
 
 from launcher.ports import find_available_port, wait_for_port_file
 
@@ -347,8 +348,9 @@ def _bot_host(target):
     return target if target.replace('.', '').isdigit() else f"{target}.local"
 
 
-def package_task(task_name):
-    print(f"Packaging task: {task_name}")
+def package_task(task_name, follower=False, leader_host=None):
+    label = " [FOLLOWER]" if follower else ""
+    print(f"Packaging task: {task_name}{label}")
     task_packages_dir = os.path.join(PROJECT_ROOT, 'tasks', task_name, 'packages')
     config_dir = os.path.join(PROJECT_ROOT, 'config')
 
@@ -364,34 +366,77 @@ def package_task(task_name):
     task_models_dir = os.path.join(PROJECT_ROOT, 'tasks', task_name, 'models')
     task_server_dir = os.path.join(PROJECT_ROOT, 'servers', task_name)
 
+    # Build a temporary patched project_config.yaml for follower deployments.
+    # When follower=True the bot will find role:follower in its project_config.yaml
+    # and automatically call run_follower() — no changes to real_server.py needed.
+    tmp_config_path = None
+    follower_config_src = os.path.join(config_dir, 'project_config_follower.yaml')
+    if follower and os.path.isfile(follower_config_src):
+        try:
+            with open(follower_config_src, 'r', encoding='utf-8') as f:
+                follower_cfg = yaml.safe_load(f) or {}
+            if leader_host:
+                follower_cfg['leader_host'] = leader_host
+                print(f"   Follower leader_host overridden to: {leader_host}")
+            fd, tmp_config_path = tempfile.mkstemp(suffix='.yaml', prefix='follower_cfg_')
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                yaml.dump(follower_cfg, f, default_flow_style=False)
+            print(f"   Using follower config (role=follower, leader={follower_cfg.get('leader_host')}:{follower_cfg.get('leader_port')})")
+        except Exception as e:
+            print(f"   Warning: could not prepare follower config: {e}")
+            tmp_config_path = None
+
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode='w:gz') as tar:
-        print(f"   Adding packages: tasks/{task_name}/packages/")
-        tar.add(task_packages_dir, arcname=f'tasks/{task_name}/packages', filter=no_pycache)
-        if os.path.exists(config_dir):
-            print(f"   Adding configs: config/")
-            tar.add(config_dir, arcname='config', filter=no_pycache)
-        if os.path.exists(task_models_dir):
-            print(f"   Adding models: tasks/{task_name}/models/")
-            tar.add(task_models_dir, arcname=f'tasks/{task_name}/models', filter=no_pycache)
-        if os.path.exists(task_server_dir):
-            print(f"   Adding server: servers/{task_name}/")
-            tar.add(task_server_dir, arcname=f'servers/{task_name}', filter=no_pycache)
+    try:
+        with tarfile.open(fileobj=buf, mode='w:gz') as tar:
+            print(f"   Adding packages: tasks/{task_name}/packages/")
+            tar.add(task_packages_dir, arcname=f'tasks/{task_name}/packages', filter=no_pycache)
 
-        common_py = os.path.join(PROJECT_ROOT, 'servers', 'common.py')
-        if os.path.exists(common_py):
-            print("   Adding server helper: servers/common.py")
-            tar.add(common_py, arcname='servers/common.py', filter=no_pycache)
+            if os.path.exists(config_dir):
+                print(f"   Adding configs: config/")
+                if tmp_config_path is not None:
+                    # Add each file in config/, replacing project_config.yaml with the follower version.
+                    for fname in sorted(os.listdir(config_dir)):
+                        fpath = os.path.join(config_dir, fname)
+                        if not os.path.isfile(fpath):
+                            continue
+                        if '__pycache__' in fname or fname.endswith('.pyc'):
+                            continue
+                        if fname == 'project_config.yaml':
+                            tar.add(tmp_config_path, arcname='config/project_config.yaml')
+                            print(f"     project_config.yaml  <- project_config_follower.yaml")
+                        else:
+                            tar.add(fpath, arcname=f'config/{fname}', filter=no_pycache)
+                else:
+                    tar.add(config_dir, arcname='config', filter=no_pycache)
 
-        templates_dir = os.path.join(PROJECT_ROOT, 'servers', 'templates')
-        if os.path.exists(templates_dir):
-            print("   Adding templates: servers/templates/")
-            tar.add(templates_dir, arcname='servers/templates', filter=no_pycache)
+            if os.path.exists(task_models_dir):
+                print(f"   Adding models: tasks/{task_name}/models/")
+                tar.add(task_models_dir, arcname=f'tasks/{task_name}/models', filter=no_pycache)
+            if os.path.exists(task_server_dir):
+                print(f"   Adding server: servers/{task_name}/")
+                tar.add(task_server_dir, arcname=f'servers/{task_name}', filter=no_pycache)
 
-        duckiebot_dir = os.path.join(PROJECT_ROOT, 'duckiebot')
-        if os.path.exists(duckiebot_dir):
-            print("   Adding duckiebot drivers: duckiebot/")
-            tar.add(duckiebot_dir, arcname='duckiebot', filter=no_pycache)
+            common_py = os.path.join(PROJECT_ROOT, 'servers', 'common.py')
+            if os.path.exists(common_py):
+                print("   Adding server helper: servers/common.py")
+                tar.add(common_py, arcname='servers/common.py', filter=no_pycache)
+
+            templates_dir = os.path.join(PROJECT_ROOT, 'servers', 'templates')
+            if os.path.exists(templates_dir):
+                print("   Adding templates: servers/templates/")
+                tar.add(templates_dir, arcname='servers/templates', filter=no_pycache)
+
+            duckiebot_dir = os.path.join(PROJECT_ROOT, 'duckiebot')
+            if os.path.exists(duckiebot_dir):
+                print("   Adding duckiebot drivers: duckiebot/")
+                tar.add(duckiebot_dir, arcname='duckiebot', filter=no_pycache)
+    finally:
+        if tmp_config_path and os.path.exists(tmp_config_path):
+            try:
+                os.unlink(tmp_config_path)
+            except OSError:
+                pass
 
     buf.seek(0)
     print("Package created!")
@@ -485,7 +530,11 @@ def run_on_bot(args):
     stop_task_on_bot(bot_target, deploy_port)
 
     print("\n[1/3] Building and deploying...")
-    package = package_task(task_name)
+    package = package_task(
+        task_name,
+        follower=getattr(args, 'follower', False),
+        leader_host=getattr(args, 'leader_host', None),
+    )
     if not package:
         return 1
     if not transfer_to_bot(bot_target, package, task_name, deploy_port):
@@ -527,6 +576,13 @@ Examples:
   python launch.py --run --bot kvati --task braitenberg
   python launch.py --run --host 192.168.1.100 --task introduction
   python launch.py --stop --bot kvati
+
+  # Deploy leader to one bot, follower to another:
+  python launch.py --run --host 172.20.10.2 --task project
+  python launch.py --run --host 172.20.10.3 --task project --follower --leader-host 172.20.10.2
+
+  # Test follower on a single bot (no physical leader needed):
+  python launch.py --run --host 172.20.10.2 --task project --follower --leader-host 172.20.10.2
         """
     )
 
@@ -542,6 +598,14 @@ Examples:
     parser.add_argument("--port", type=int, default=5000, help="Task web server port")
     parser.add_argument("--godot-path", type=str, default=None)
     parser.add_argument("--debug", action="store_true", help="Show Godot console output")
+    parser.add_argument(
+        "--follower", action="store_true",
+        help="Deploy as follower bot (uses project_config_follower.yaml instead of project_config.yaml)"
+    )
+    parser.add_argument(
+        "--leader-host", type=str, default=None,
+        help="Override leader IP/hostname in follower config (e.g. 172.20.10.2)"
+    )
 
     args = parser.parse_args()
 

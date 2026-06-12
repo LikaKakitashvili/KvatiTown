@@ -23,8 +23,7 @@ from duckiebot.camera_driver import CameraDriver
 from duckiebot.wheel_driver import DaguWheelsDriver
 from duckiebot.wheel_driver.wheels_driver_abs import WheelPWMConfiguration
 from duckiebot.led_driver import LEDDriver
-from launcher.ports import find_available_port
-from servers.common import shutdown_cleanup, suppress_http_logs
+from servers.common import find_available_port, shutdown_cleanup, suppress_http_logs
 
 
 def _configure_line_buffered_stdio():
@@ -359,16 +358,24 @@ def main():
         leds = None
 
     print("\n[2/4] Initializing wheels driver...")
-    wheels = DaguWheelsDriver(WheelPWMConfiguration(), WheelPWMConfiguration())
-    print("  Wheels: ok")
+    try:
+        wheels = DaguWheelsDriver(WheelPWMConfiguration(), WheelPWMConfiguration())
+        print("  Wheels: ok")
+    except Exception as e:
+        print(f"  Wheels: not available ({e})")
+        wheels = None
 
     print("\n[3/4] Initializing camera driver...")
     if not _try_start_camera(max_attempts=2):
         print("  Camera: unavailable now (server will continue, retrying in background)")
 
     print("\n[4/4] Initializing project lane agent...")
-    agent = project_agent.build_project_lane_agent()
-    print("  Agent: ready")
+    try:
+        agent = project_agent.build_project_lane_agent()
+        print("  Agent: ready")
+    except Exception as e:
+        print(f"  Agent: failed ({e})")
+        agent = None
 
     def _shutdown(signum, frame):
         print("\nShutting down...")

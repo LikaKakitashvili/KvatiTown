@@ -5,8 +5,8 @@ loop_hz: 20
 leader_host: 172.20.10.4
 leader_port: 5000
 
-cruise_speed: 0.48
-slow_speed: 0.26
+cruise_speed: 0.32
+slow_speed: 0.18
 
 follower_max_speed: 0.48
 follower_min_speed: 0.0

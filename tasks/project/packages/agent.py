@@ -120,6 +120,13 @@ def load_config() -> Dict[str, Any]:
         "sign_cooldown_s":     float(cfg.get("sign_cooldown_s", 3.0)),
         "sign_center_roi":     float(cfg.get("sign_center_roi", 1.0)),
         "leader_tag_ids":      [int(x) for x in cfg.get("leader_tag_ids", [])],
+        "slow_hold_s":         float(cfg.get("slow_hold_s", 2.0)),
+        # solo_test: when True the follower cruises if the leader is unreachable,
+        # so you can test lane-following behavior on a single bot without a leader.
+        "solo_test":           bool(cfg.get("solo_test", False)),
+        # visual_follow: when True the follower ignores HTTP and moves only when
+        # the leader AprilTag (from leader_tag_ids) is visible in the camera.
+        "visual_follow":       bool(cfg.get("visual_follow", False)),
     }
 
 
@@ -248,6 +255,43 @@ def detect_sign_event(confirmed_ids, cfg):
     _sign_runtime["candidate_event"] = EVENT_NORMAL
     _sign_runtime["candidate_count"] = 0
     return EVENT_NORMAL
+
+
+# ---------------------------------------------------------------------------
+# Blue-robot detector — no AprilTag needed, works on plain Duckiebot body
+# ---------------------------------------------------------------------------
+
+# HSV range for the Duckiebot blue chassis
+_BLUE_LOWER = np.array([95, 80, 50])
+_BLUE_UPPER = np.array([140, 255, 255])
+_BLUE_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
+# Blue-ratio thresholds (fraction of the ROI covered by blue):
+#   < _BLUE_MIN  : leader not visible → stop
+#   > _BLUE_MAX  : leader too close   → stop (prevents crashing)
+# Between min and max: leader in view → drive, speed scaled by distance
+_BLUE_MIN_RATIO  = 0.03   # below this: not visible
+_BLUE_MAX_RATIO  = 0.22   # above this: too close, stop
+_BLUE_NEAR_RATIO = 0.12   # above this: start slowing down
+
+
+def _detect_blue_robot(frame_bgr):
+    # type: (Optional[Any]) -> Tuple[bool, bool, float]
+    """Return (visible, too_close, coverage_ratio) for the blue Duckiebot body."""
+    if frame_bgr is None:
+        return False, False, 0.0
+    h, w = frame_bgr.shape[:2]
+    # Lower 70% of frame, centre 80% width — where the leader body appears.
+    roi = frame_bgr[int(h * 0.15):, int(w * 0.10): int(w * 0.90)]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, _BLUE_LOWER, _BLUE_UPPER)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,   _BLUE_KERNEL)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE,  _BLUE_KERNEL)
+    area  = float(np.count_nonzero(mask))
+    ratio = area / max(1.0, float(roi.shape[0] * roi.shape[1]))
+    visible   = _BLUE_MIN_RATIO <= ratio < _BLUE_MAX_RATIO
+    too_close = ratio >= _BLUE_MAX_RATIO
+    return visible, too_close, ratio
 
 
 # ---------------------------------------------------------------------------
@@ -495,9 +539,17 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
     distance_kp       = float(cfg.get("distance_kp", 0.6))
     decel_time_s      = float(cfg.get("decel_time_s", 0.8))
     decel_steps       = int(cfg.get("decel_steps", 8))
+    # solo_test=True: if the leader is unreachable, cruise anyway (single-bot test mode).
+    solo_test         = bool(cfg.get("solo_test", False))
+    # visual_follow=True: ignore HTTP entirely — move only when leader AprilTag is visible.
+    visual_follow     = bool(cfg.get("visual_follow", False))
     status_url        = f"http://{leader_host}:{leader_port}/convoy/status"
     leader_tag_ids    = set(int(x) for x in cfg.get("leader_tag_ids", []))
     print(f"[Project][Follower] Polling loop started at {loop_hz:.1f} Hz.")
+    if visual_follow:
+        print(f"[Project][Follower] visual_follow=True — moves only when leader tag visible. leader_tag_ids={leader_tag_ids}")
+    elif solo_test:
+        print(f"[Project][Follower] solo_test=True — will cruise when leader is unreachable.")
 
     last_log        = 0.0
     last_poll       = 0.0
@@ -524,36 +576,73 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             if leader_tag_id is not None:
                 last_leader_tag_id = leader_tag_id
 
-        if now - last_poll >= poll_dt:
-            try:
-                resp = requests.get(status_url, timeout=request_timeout_s)
-                if resp.ok:
-                    data = resp.json()
-                    latest = {
-                        "state": str(data.get("state", "STOPPED")).upper(),
-                        "speed": float(data.get("speed", 0.0)),
-                        "ts":    float(data.get("ts", 0.0)),
-                    }
-            except Exception:
-                pass
-            last_poll = now
+        if visual_follow:
+            # Visual-only mode: drive when the leader is visible, stop otherwise.
+            # If leader_tag_ids are configured, use AprilTag detection (distance_signal).
+            # If leader_tag_ids is empty, use blue-robot color detection with
+            # proportional speed: slows as the leader fills the frame, stops when
+            # the leader is too close (prevents crashing into a stopped leader).
+            if leader_tag_ids:
+                leader_visible = distance_signal is not None
+                too_close      = False
+                blue_ratio     = 0.0
+            else:
+                leader_visible, too_close, blue_ratio = _detect_blue_robot(frame_bgr)
 
-        is_stale = (now - float(latest.get("ts", 0.0))) > leader_timeout_s
-        state    = str(latest.get("state", "STOPPED")).upper()
-
-        if is_stale:
-            mode, target_speed = EVENT_TIMEOUT, 0.0
-        elif state == STATE_STOPPED:
-            mode, target_speed = STATE_STOPPED, 0.0
-        elif state == STATE_SLOW:
-            mode, target_speed = STATE_SLOW, min(slow_speed, follower_max_speed)
+            if too_close:
+                # Leader stopped right in front — stop immediately.
+                mode, target_speed = STATE_STOPPED, 0.0
+            elif leader_visible:
+                mode = STATE_CRUISING
+                if distance_signal is not None:
+                    # AprilTag distance control
+                    target_speed   = min(cruise_speed, follower_max_speed)
+                    distance_error = distance_target - float(distance_signal)
+                    target_speed  += distance_kp * distance_error
+                    target_speed   = max(follower_min_speed, min(follower_max_speed, target_speed))
+                else:
+                    # Blue-ratio speed control: slow down as leader gets closer.
+                    # Full speed when near _BLUE_MIN_RATIO, zero at _BLUE_NEAR_RATIO.
+                    t = max(0.0, min(1.0, (blue_ratio - _BLUE_MIN_RATIO) /
+                                         max(0.001, _BLUE_NEAR_RATIO - _BLUE_MIN_RATIO)))
+                    target_speed = max(follower_min_speed,
+                                       min(cruise_speed, cruise_speed * (1.0 - 0.8 * t)))
+            else:
+                mode, target_speed = STATE_STOPPED, 0.0
         else:
-            mode, target_speed = STATE_CRUISING, min(cruise_speed, follower_max_speed)
+            if now - last_poll >= poll_dt:
+                try:
+                    resp = requests.get(status_url, timeout=request_timeout_s)
+                    if resp.ok:
+                        data = resp.json()
+                        latest = {
+                            "state": str(data.get("state", "STOPPED")).upper(),
+                            "speed": float(data.get("speed", 0.0)),
+                            "ts":    float(data.get("ts", 0.0)),
+                        }
+                except Exception:
+                    pass
+                last_poll = now
 
-        if mode in (STATE_CRUISING, STATE_SLOW) and distance_signal is not None:
-            distance_error = distance_target - float(distance_signal)
-            target_speed  += distance_kp * distance_error
-            target_speed   = max(follower_min_speed, min(follower_max_speed, target_speed))
+            is_stale = (now - float(latest.get("ts", 0.0))) > leader_timeout_s
+            state    = str(latest.get("state", "STOPPED")).upper()
+
+            if is_stale:
+                if solo_test:
+                    mode, target_speed = STATE_CRUISING, min(cruise_speed, follower_max_speed)
+                else:
+                    mode, target_speed = EVENT_TIMEOUT, 0.0
+            elif state == STATE_STOPPED:
+                mode, target_speed = STATE_STOPPED, 0.0
+            elif state == STATE_SLOW:
+                mode, target_speed = STATE_SLOW, min(slow_speed, follower_max_speed)
+            else:
+                mode, target_speed = STATE_CRUISING, min(cruise_speed, follower_max_speed)
+
+            if mode in (STATE_CRUISING, STATE_SLOW) and distance_signal is not None:
+                distance_error = distance_target - float(distance_signal)
+                target_speed  += distance_kp * distance_error
+                target_speed   = max(follower_min_speed, min(follower_max_speed, target_speed))
 
         if mode == EVENT_TIMEOUT:
             commanded_speed = 0.0
@@ -582,18 +671,31 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             elif wheels is not None:
                 wheels.set_wheels_speed(commanded_speed, commanded_speed)
 
+        # Always publish the current frame so the web UI camera feed is live,
+        # even when the bot is stopped or waiting for the leader.
+        if frame_bgr is not None and mode in (STATE_STOPPED, EVENT_TIMEOUT):
+            set_viz_snapshot(frame_bgr)
+
         if mode != prev_mode:
             print(f"[Project][Follower] transition {prev_mode} -> {mode}", flush=True)
             prev_mode = mode
 
         if now - last_log >= 2.0:
-            age = now - float(latest.get("ts", 0.0))
-            print(
-                f"[Project][Follower] mode={mode} target={target_speed:.2f} "
-                f"cmd={commanded_speed:.2f} leader={state} age={age:.2f}s "
-                f"dist={distance_signal} ltag={last_leader_tag_id}",
-                flush=True,
-            )
+            if visual_follow:
+                print(
+                    f"[Project][Follower] mode={mode} target={target_speed:.2f} "
+                    f"cmd={commanded_speed:.2f} blue={blue_ratio:.3f} "
+                    f"too_close={too_close}",
+                    flush=True,
+                )
+            else:
+                age = now - float(latest.get("ts", 0.0))
+                print(
+                    f"[Project][Follower] mode={mode} target={target_speed:.2f} "
+                    f"cmd={commanded_speed:.2f} leader={state} age={age:.2f}s "
+                    f"dist={distance_signal} ltag={last_leader_tag_id}",
+                    flush=True,
+                )
             last_log = now
         time.sleep(dt)
 

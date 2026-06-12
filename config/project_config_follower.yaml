@@ -2,9 +2,21 @@ role: follower
 
 loop_hz: 20
 
-# Set this to your leader's hostname or IP
+# Set this to your leader's hostname or IP before deploying.
+# When testing on a single bot without a physical leader, set
+# solo_test: true so the follower cruises instead of stopping
+# when the leader is unreachable.
 leader_host: 172.20.10.4
 leader_port: 5000
+
+# solo_test: true  — follower drives normally even if leader is offline.
+# Set to true for single-bot testing; false for real convoy deployment.
+solo_test: false
+
+# visual_follow: true  — follower moves ONLY when it sees the leader AprilTag.
+# No code needed on the leader. Works with a manually-driven leader bot.
+# Set the AprilTag ID (stuck to the back of the leader) in leader_tag_ids below.
+visual_follow: true
 
 cruise_speed: 0.48
 slow_speed: 0.26
@@ -20,6 +32,7 @@ request_timeout_s: 0.2
 leader_timeout_s: 0.4
 
 stop_hold_s: 2.0
+slow_hold_s: 2.0
 decel_time_s: 0.8
 decel_steps: 8
 
@@ -30,5 +43,7 @@ sign_confirm_frames: 3
 sign_cooldown_s: 2.0
 sign_center_roi: 1.0
 
-# AprilTag IDs used to recognize the leader robot
+# AprilTag IDs used to recognize the leader robot.
+# Leave empty ([]) to use blue-body color detection instead (no tag needed).
+# Set to a specific ID (e.g. [400]) if you have an AprilTag on the leader.
 leader_tag_ids: []

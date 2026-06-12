@@ -1,5 +1,6 @@
 import logging
 import re
+import socket
 import sys
 import time
 import cv2
@@ -61,6 +62,26 @@ def make_frame_generator(get_camera, visualize, quality=70, rgb=True):
                 time.sleep(0.05)
 
     return generate
+
+
+def find_available_port(start=5000, max_attempts=20, exclude=None):
+    """Find a free TCP port by test-binding, starting from `start`."""
+    if exclude is None:
+        exclude = set()
+    for offset in range(max_attempts):
+        port = start + offset
+        if port in exclude:
+            continue
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("", port))
+                return port
+        except OSError:
+            continue
+    raise RuntimeError(
+        f"Could not find a free port in range {start}-{start + max_attempts - 1}"
+    )
 
 
 def shutdown_cleanup(wheels, camera, stop_event):
