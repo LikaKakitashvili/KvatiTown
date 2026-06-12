@@ -376,11 +376,6 @@ def _get_lane_agent() -> LaneServoingAgent:
     return _lane_agent
 
 
-def _scale_drive_commands(left: float, right: float, target_speed: float) -> Tuple[float, float]:
-    scale = float(target_speed) / max(1e-6, max(float(left), float(right)))
-    return min(1.0, float(left) * scale), min(1.0, float(right) * scale)
-
-
 def _publish_viz(
     frame_bgr: Any,
     debug_info: Optional[Dict[str, Any]],
@@ -474,8 +469,8 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             current_speed = max(0.0, slow_speed)
             if wheels is not None and frame_bgr is not None:
                 la = _get_lane_agent()
-                left, right = la.compute_commands(frame_bgr, bgr_input=True)
-                cmd_l, cmd_r = _scale_drive_commands(left, right, current_speed)
+                la.base_speed = current_speed
+                cmd_l, cmd_r = la.compute_commands(frame_bgr, bgr_input=True)
                 _publish_viz(frame_bgr, la.last_debug_info, last_event, last_tag_ids, cmd_l, cmd_r)
                 wheels.set_wheels_speed(cmd_l, cmd_r)
             elif wheels is not None:
@@ -486,8 +481,8 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             current_speed = max(0.0, cruise_speed)
             if wheels is not None and frame_bgr is not None:
                 la = _get_lane_agent()
-                left, right = la.compute_commands(frame_bgr, bgr_input=True)
-                cmd_l, cmd_r = _scale_drive_commands(left, right, current_speed)
+                la.base_speed = current_speed
+                cmd_l, cmd_r = la.compute_commands(frame_bgr, bgr_input=True)
                 _publish_viz(frame_bgr, la.last_debug_info, last_event, last_tag_ids, cmd_l, cmd_r)
                 wheels.set_wheels_speed(cmd_l, cmd_r)
             elif wheels is not None:
@@ -657,8 +652,8 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             commanded_speed = target_speed
             if wheels is not None and frame_bgr is not None:
                 la = _get_lane_agent()
-                left, right  = la.compute_commands(frame_bgr, bgr_input=True)
-                cmd_l, cmd_r = _scale_drive_commands(left, right, commanded_speed)
+                la.base_speed = commanded_speed
+                cmd_l, cmd_r = la.compute_commands(frame_bgr, bgr_input=True)
                 leader = get_leader_status()
                 _publish_viz(
                     frame_bgr,
@@ -724,20 +719,10 @@ def get_hsv_bounds():
 
 
 def build_project_lane_agent() -> LaneServoingAgent:
+    """Build the lane agent using the reference config values from lane_servoing_config.yaml.
+    The FSM sets la.base_speed at runtime before each compute_commands call."""
     global _lane_agent
-    sim_cfg = os.path.normpath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "project_lane_sim.yaml")
-    )
-    use_sim = "sim" in _config_path().lower()
-    if use_sim and os.path.isfile(sim_cfg):
-        _lane_agent = LaneServoingAgent(config_path=sim_cfg)
-    else:
-        _lane_agent = LaneServoingAgent()
-        _lane_agent.base_speed  = 0.48
-        _lane_agent.curve_speed = 0.40
-        _lane_agent.d_gain      = 0.79
-        _lane_agent.p_gain      = 0.16
-        _lane_agent.detection_threshold = 100
+    _lane_agent = LaneServoingAgent()
     return _lane_agent
 
 

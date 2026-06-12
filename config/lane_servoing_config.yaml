@@ -1,10 +1,12 @@
-base_speed: 0.48
-curve_speed: 0.5
-p_gain: 0.16
-d_gain: 0.7
-detection_threshold: 100
-
-# Same ROI / slice layout as visual_lane_servoing (3 lines, full width)
-roi_start: 0.47
-roi_slice_band: 0.35
-num_slices: 3
+# Lane servoing PID and detection parameters
+# Source: https://github.com/Qristine0/duckieBckp/tree/fixed/servoing
+# base_speed is overridden at runtime by the FSM (cruise_speed / slow_speed).
+base_speed: 0.30
+curve_boost: 1.0
+curve_speed: 0.1
+curve_threshold: 350
+d_gain: 0.11
+detection_threshold: 30
+max_steer: 0.22
+p_gain: 0.20
+steering_threshold: 0.2

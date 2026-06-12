@@ -6,7 +6,7 @@ loop_hz: 20
 # When testing on a single bot without a physical leader, set
 # solo_test: true so the follower cruises instead of stopping
 # when the leader is unreachable.
-leader_host: 172.20.10.4
+leader_host: 10.170.14.215
 leader_port: 5000
 
 # solo_test: true  — follower drives normally even if leader is offline.
@@ -18,10 +18,10 @@ solo_test: false
 # Set the AprilTag ID (stuck to the back of the leader) in leader_tag_ids below.
 visual_follow: true
 
-cruise_speed: 0.48
-slow_speed: 0.26
+cruise_speed: 0.27
+slow_speed: 0.16
 
-follower_max_speed: 0.48
+follower_max_speed: 0.27
 follower_min_speed: 0.0
 distance_target: 0.06
 distance_kp: 0.6

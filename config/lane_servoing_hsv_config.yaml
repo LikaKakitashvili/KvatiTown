@@ -1,18 +1,19 @@
-# HSV ranges for lane line detection.
-# Adjust live via the web UI sliders — saved here automatically.
+# HSV color bounds for lane marking detection.
+# Source: https://github.com/Qristine0/duckieBckp/tree/fixed/servoing
+# Adjust via the web UI sliders if needed — changes are saved back here.
 
-# Yellow line (left / dashed)  — H 15-50 covers real Duckietown yellow
-yellow_lower_h: 15
-yellow_lower_s: 60
-yellow_lower_v: 60
-yellow_upper_h: 50
+# Yellow line (left / centre dashed line)
+yellow_lower_h: 18
+yellow_lower_s: 70
+yellow_lower_v: 70
+yellow_upper_h: 42
 yellow_upper_s: 255
 yellow_upper_v: 255
 
-# White line (right / solid)   — low S, high V
+# White line (right / edge solid line)
 white_lower_h: 0
 white_lower_s: 0
-white_lower_v: 140
+white_lower_v: 205
 white_upper_h: 179
-white_upper_s: 70
+white_upper_s: 42
 white_upper_v: 255
