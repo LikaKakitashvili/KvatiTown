@@ -21,6 +21,7 @@ def _apply_hsv_config(h: dict) -> None:
     global _yellow_lower, _yellow_upper, _yellow_alt_lower, _yellow_alt_upper
     global _white_lower, _white_upper
     global _yellow_side_width_frac, _white_side_width_frac, _yellow_center_exclude_frac
+    global _yellow_center_exclude_from_row_frac, _yellow_use_alt_band
     global _edge_mag_threshold, _use_white_balance, _top_exclude_frac
 
     _yellow_lower = np.array([
@@ -44,6 +45,8 @@ def _apply_hsv_config(h: dict) -> None:
     _yellow_side_width_frac = float(h.get('yellow_side_width_frac', 0.75))
     _white_side_width_frac = float(h.get('white_side_width_frac', 0.75))
     _yellow_center_exclude_frac = float(h.get('yellow_center_exclude_frac', 0.18))
+    _yellow_center_exclude_from_row_frac = float(h.get('yellow_center_exclude_from_row_frac', 0.35))
+    _yellow_use_alt_band = bool(h.get('yellow_use_alt_band', True))
     _edge_mag_threshold = float(h.get('edge_mag_threshold', 28))
     _use_white_balance = bool(h.get('use_white_balance', True))
     _top_exclude_frac = float(h.get('top_exclude_frac', 0.0))
@@ -77,26 +80,62 @@ def _correct_white_balance(bgr: np.ndarray) -> np.ndarray:
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
+def _apply_yellow_center_exclude(mask: np.ndarray) -> np.ndarray:
+    """Blank center band in the lower frame only — kills floor noise, keeps turns visible ahead."""
+    h, w = mask.shape[:2]
+    frac = max(0.0, float(_yellow_center_exclude_frac))
+    if frac <= 0.0:
+        return mask
+    half = min(0.45, frac) * 0.5
+    cx0 = int(w * (0.5 - half))
+    cx1 = int(w * (0.5 + half))
+    row0 = int(h * max(0.0, min(0.9, float(_yellow_center_exclude_from_row_frac))))
+    out = mask.copy()
+    out[row0:, cx0:cx1] = False
+    return out
+
+
+def _drop_center_floor_blobs(mask: np.ndarray) -> np.ndarray:
+    """Remove large blobs sitting in the center-bottom (common false yellow on floor tiles)."""
+    h, w = mask.shape[:2]
+    m_u8 = (mask.astype(np.uint8) * 255)
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats(m_u8, connectivity=8)
+    if n <= 1:
+        return mask
+    cx_lo = int(w * 0.32)
+    cx_hi = int(w * 0.68)
+    cy_lo = int(h * 0.38)
+    keep = np.zeros_like(mask, dtype=bool)
+    for i in range(1, n):
+        cx, cy = centroids[i]
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        in_center_bottom = (cx_lo <= cx <= cx_hi) and (cy >= cy_lo)
+        if in_center_bottom and area >= 120:
+            continue
+        keep[labels == i] = True
+    return keep
+
+
 def _yellow_color_mask(img_hsv: np.ndarray) -> np.ndarray:
     h, w = img_hsv.shape[:2]
     m_primary = cv2.inRange(img_hsv, _yellow_lower, _yellow_upper) > 0
-    m_alt = cv2.inRange(img_hsv, _yellow_alt_lower, _yellow_alt_upper) > 0
-    m = m_primary | m_alt
+    m = m_primary
+    if _yellow_use_alt_band:
+        m_alt = cv2.inRange(img_hsv, _yellow_alt_lower, _yellow_alt_upper) > 0
+        m = m | m_alt
 
     white = cv2.inRange(img_hsv, _white_lower, _white_upper) > 0
     m = m & ~white
 
     yellow_cut = int(np.floor(w * _yellow_side_width_frac))
     m[:, yellow_cut:] = False
-
-    half = max(0.0, min(0.45, float(_yellow_center_exclude_frac))) * 0.5
-    cx0 = int(w * (0.5 - half))
-    cx1 = int(w * (0.5 + half))
-    m[:, cx0:cx1] = False
+    m = _apply_yellow_center_exclude(m)
 
     m_u8 = (m.astype(np.uint8) * 255)
-    m_u8 = cv2.morphologyEx(m_u8, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    return _mask_top_rows(m_u8 > 0)
+    m_u8 = cv2.morphologyEx(m_u8, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    m_u8 = cv2.morphologyEx(m_u8, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    m = _drop_center_floor_blobs(m_u8 > 0)
+    return _mask_top_rows(m)
 
 
 def _white_color_mask(img_hsv: np.ndarray) -> np.ndarray:

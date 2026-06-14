@@ -7,18 +7,19 @@ white_upper_s: 80
 white_upper_v: 255
 
 # Yellow — primary band (orange/yellow tape)
-yellow_lower_h: 20
-yellow_lower_s: 100
-yellow_lower_v: 100
-yellow_upper_h: 35
+yellow_lower_h: 18
+yellow_lower_s: 85
+yellow_lower_v: 85
+yellow_upper_h: 38
 yellow_upper_s: 255
 yellow_upper_v: 255
 
-# Yellow — alt band (tape looks cyan/green under pink camera cast)
+# Alt band picks up cyan floor tiles — keep off unless tape looks green on your bot
+yellow_use_alt_band: false
 yellow_alt_lower_h: 82
-yellow_alt_lower_s: 55
-yellow_alt_lower_v: 70
-yellow_alt_upper_h: 105
+yellow_alt_lower_s: 80
+yellow_alt_lower_v: 90
+yellow_alt_upper_h: 100
 yellow_alt_upper_s: 255
 yellow_alt_upper_v: 255
 
@@ -26,8 +27,9 @@ yellow_alt_upper_v: 255
 top_exclude_frac: 0.30
 
 # Spatial search regions (fraction of image width)
-yellow_side_width_frac: 0.75   # yellow: left 75% of frame
-white_side_width_frac: 0.75    # white: right 75% of frame
-yellow_center_exclude_frac: 0.18
+yellow_side_width_frac: 0.78   # yellow searched on left ~78% of frame
+white_side_width_frac: 0.85    # white: right 85% of frame
+yellow_center_exclude_frac: 0.14
+yellow_center_exclude_from_row_frac: 0.35  # center cut only in lower frame (floor noise)
 edge_mag_threshold: 28
 use_white_balance: true

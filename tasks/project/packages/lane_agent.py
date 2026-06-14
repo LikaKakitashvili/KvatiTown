@@ -3,7 +3,7 @@ import yaml
 import numpy as np
 import cv2
 from collections import deque
-from typing import Tuple
+from typing import List, Optional, Tuple
 
 from tasks.project.packages import visual_servoing_activity as student
 from tasks.project.packages.cuvrve_behavior import detect_curve
@@ -19,6 +19,38 @@ _NUM_SLICES = 3
 _SLICE_TOL = 5
 
 
+def _line_x_in_strip(strip: np.ndarray) -> Optional[int]:
+    if strip.size == 0:
+        return None
+    xs = np.where(strip > 0)[1]
+    if len(xs) == 0:
+        return None
+    return int(np.median(xs))
+
+
+def _interpolate_slice_xs(values: List[Optional[int]]) -> List[int]:
+    """Fill gaps between dashes so near/far slices still form a curve estimate."""
+    if not any(v is not None for v in values):
+        return []
+    filled = list(values)
+    known = [i for i, v in enumerate(filled) if v is not None]
+    if len(known) == 1:
+        return [int(filled[known[0]])] * len(filled)
+    for i, v in enumerate(filled):
+        if v is not None:
+            continue
+        prev_i = max((k for k in known if k < i), default=None)
+        next_i = min((k for k in known if k > i), default=None)
+        if prev_i is not None and next_i is not None:
+            t = (i - prev_i) / max(1, next_i - prev_i)
+            filled[i] = int(filled[prev_i] + t * (filled[next_i] - filled[prev_i]))
+        elif prev_i is not None:
+            filled[i] = filled[prev_i]
+        elif next_i is not None:
+            filled[i] = filled[next_i]
+    return [int(v) for v in filled]
+
+
 def detect_lines_in_slices(
     mask_yellow: np.ndarray,
     mask_white: np.ndarray,
@@ -26,26 +58,24 @@ def detect_lines_in_slices(
     roi_start: float = _ROI_START,
     roi_slice_band: float = _ROI_SLICE_BAND,
     num_slices: int = _NUM_SLICES,
+    slice_tol: int = _SLICE_TOL,
 ) -> Tuple[list, list]:
-    """Same slice layout as tasks/visual_lane_servoing/packages/agent.py."""
+    """Sample lane x-positions on horizontal slices; interpolate across dash gaps."""
     slice_height = int(h * roi_slice_band / num_slices)
     start_y = int(h * roi_start)
-    yellow_xs, white_xs = [], []
+    tol = max(3, int(slice_tol))
+    yellow_raw: List[Optional[int]] = []
+    white_raw: List[Optional[int]] = []
 
     for i in range(num_slices):
         y = start_y + i * slice_height + slice_height // 2
+        y0 = max(0, y - tol)
+        y1 = min(h, y + tol + 1)
 
-        strip_y = mask_yellow[y - _SLICE_TOL: y + _SLICE_TOL, :]
-        idx = np.where(strip_y > 0)[1]
-        if len(idx) > 0:
-            yellow_xs.append(int(np.mean(idx)))
+        yellow_raw.append(_line_x_in_strip(mask_yellow[y0:y1, :]))
+        white_raw.append(_line_x_in_strip(mask_white[y0:y1, :]))
 
-        strip_w = mask_white[y - _SLICE_TOL: y + _SLICE_TOL, :]
-        idx = np.where(strip_w > 0)[1]
-        if len(idx) > 0:
-            white_xs.append(int(np.mean(idx)))
-
-    return yellow_xs, white_xs
+    return _interpolate_slice_xs(yellow_raw), _interpolate_slice_xs(white_raw)
 
 
 class LaneServoingAgent:
@@ -71,6 +101,7 @@ class LaneServoingAgent:
         self.roi_start = float(cfg.get('roi_start', _ROI_START))
         self.roi_slice_band = float(cfg.get('roi_slice_band', _ROI_SLICE_BAND))
         self.num_slices = max(1, int(cfg.get('num_slices', _NUM_SLICES)))
+        self.slice_tol = max(3, int(cfg.get('slice_tol', _SLICE_TOL)))
 
         self.frame_count = 0
         self._prev_error = 0.0
@@ -156,8 +187,11 @@ class LaneServoingAgent:
             print(f"[Agent] detect_lane_markings error: {e}")
             return 0.0, 0.0
 
-        mask_y = (mask_left * 255).astype(np.uint8)
-        mask_w = (mask_right * 255).astype(np.uint8)
+        mask_y_edge = (mask_left * 255).astype(np.uint8)
+        mask_w_edge = (mask_right * 255).astype(np.uint8)
+        # Color masks are more stable in curves; edge masks add detail when available.
+        mask_y = np.maximum(yellow_color_mask, mask_y_edge)
+        mask_w = np.maximum(white_color_mask, mask_w_edge)
 
         yellow_pixels = int(np.count_nonzero(mask_y))
         white_pixels = int(np.count_nonzero(mask_w))
@@ -190,6 +224,7 @@ class LaneServoingAgent:
             roi_start=self.roi_start,
             roi_slice_band=self.roi_slice_band,
             num_slices=self.num_slices,
+            slice_tol=self.slice_tol,
         )
         both_visible = left_det and right_det and not recovery
         is_curve, curve_dir = detect_curve(yellow_xs, white_xs, self.curve_threshold)

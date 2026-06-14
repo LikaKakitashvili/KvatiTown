@@ -13,7 +13,7 @@ class CameraDriver(CameraDriverAbs):
         # negotiation failure. Let the source pick a native mode by framerate, then
         # scale to the desired output size via nvvidconv.
         pipeline = (
-          f"nvarguscamerasrc  ! "
+          f"nvarguscamerasrc sensor-id={int(self.sensor_mode)} ! "
           f"video/x-raw(memory:NVMM), format=NV12, framerate={self.framerate}/1 ! "
           f"nvvidconv ! "
           f"video/x-raw, width={self.width}, height={self.height}, format=BGRx ! "
@@ -27,32 +27,39 @@ class CameraDriver(CameraDriverAbs):
 
 
     def _initialize_camera(self):
-        pipeline = self._build_gstreamer_pipeline()
+        import time
 
+        pipeline = self._build_gstreamer_pipeline()
         print(f"[JetsonCamera] Pipeline: {pipeline}")
 
-        self._device = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        cap = None
+        try:
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            if not cap.isOpened():
+                raise RuntimeError("Failed to open camera (isOpened returned False)")
 
-        if not self._device.isOpened():
-            raise RuntimeError("Failed to open camera")
-
-        # isOpened() can return True even when GStreamer fails internally.
-        # nvarguscamerasrc needs a moment to warm up, so retry with backoff.
-        import time
-        warmup_attempts = 30
-        for attempt in range(warmup_attempts):
-            ret, frame = self._device.read()
-            if ret and frame is not None:
-                print(f"[JetsonCamera] First frame after {attempt + 1} attempt(s)")
-                break
-            time.sleep(0.5)
-        else:
-            self._device.release()
+            # isOpened() can return True even when GStreamer fails internally.
+            warmup_attempts = 15
+            for attempt in range(warmup_attempts):
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    self._device = cap
+                    print(f"[JetsonCamera] First frame after {attempt + 1} attempt(s)")
+                    break
+                time.sleep(0.4)
+            else:
+                raise RuntimeError(
+                    "Camera opened but returned no frames — "
+                    "try: sudo systemctl restart nvargus-daemon"
+                )
+        except Exception:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
             self._device = None
-            raise RuntimeError(
-                "Camera opened but returned no frames after warm-up — "
-                "check nvargus-daemon and camera connection"
-            )
+            raise
 
         actual_w = int(self._device.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self._device.get(cv2.CAP_PROP_FRAME_HEIGHT))

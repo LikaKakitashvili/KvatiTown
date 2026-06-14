@@ -2,7 +2,11 @@ base_speed: 0.09
 curve_speed: 0.15
 p_gain: 0.08
 d_gain: 0.28
+max_steer: 0.45
 detection_threshold: 80
+curve_threshold: 100
+steering_threshold: 0.15
+slice_tol: 14
 
 # Same ROI / slice layout as visual_lane_servoing (3 lines, full width)
 roi_start: 0.30

@@ -7,6 +7,7 @@ numpy>=1.24.0,<2
 pyyaml
 requests
 pyserial
+dt-apriltags; platform_system == "Linux"
 jupyter
 matplotlib
 onnxruntime

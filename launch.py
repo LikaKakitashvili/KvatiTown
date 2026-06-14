@@ -348,6 +348,15 @@ def package_task(task_name):
         if os.path.exists(task_models_dir):
             print(f"   Adding models: tasks/{task_name}/models/")
             tar.add(task_models_dir, arcname=f'tasks/{task_name}/models', filter=no_pycache)
+        if task_name == 'project':
+            od_packages = os.path.join(PROJECT_ROOT, 'tasks', 'object_detection', 'packages')
+            od_models = os.path.join(PROJECT_ROOT, 'tasks', 'object_detection', 'models')
+            if os.path.exists(od_packages):
+                print("   Adding object_detection packages (follower vision)")
+                tar.add(od_packages, arcname='tasks/object_detection/packages', filter=no_pycache)
+            if os.path.exists(od_models):
+                print("   Adding object_detection models (follower vision)")
+                tar.add(od_models, arcname='tasks/object_detection/models', filter=no_pycache)
         if os.path.exists(task_server_dir):
             print(f"   Adding server: servers/{task_name}/")
             tar.add(task_server_dir, arcname=f'servers/{task_name}', filter=no_pycache)

@@ -46,7 +46,7 @@ camera = None
 wheels = None
 leds = None
 agent = None
-running = True
+running = False
 stop_event = threading.Event()
 _agent_thread = None
 _camera_ready = False
@@ -62,7 +62,7 @@ def _stop_camera():
             pass
     camera = None
     _camera_ready = False
-    time.sleep(2.0)
+    time.sleep(3.0)
 
 
 def _try_start_camera(max_attempts: int = 1) -> bool:
@@ -102,15 +102,19 @@ def _start_agent_thread():
 
 
 def _camera_retry_loop():
-    """Keep trying camera init in background so UI can still be opened."""
+    """Keep trying camera init in background — web UI is already running."""
+    time.sleep(4.0)
     while not stop_event.is_set():
         if _camera_ready and camera is not None:
             time.sleep(2.0)
             continue
         print("[Project] Camera retry (waiting for nvargus)...")
-        if _try_start_camera(max_attempts=1):
-            _start_agent_thread()
-        time.sleep(8.0)
+        try:
+            if _try_start_camera(max_attempts=1):
+                _start_agent_thread()
+        except Exception as e:
+            print(f"[Project] Camera retry error: {e}")
+        time.sleep(12.0)
 
 
 def _error_frame(message: str):
@@ -172,7 +176,15 @@ def _generate_project_frames():
                 )
             else:
                 frame_bgr, _ = project_agent.get_viz_snapshot()
-                if frame_bgr is None:
+                if frame_bgr is None and camera is not None:
+                    try:
+                        ok, raw = camera.read()
+                        display = raw if ok and raw is not None else _error_frame(
+                            "Waiting for first frame from agent..."
+                        )
+                    except Exception:
+                        display = _error_frame("Waiting for first frame from agent...")
+                elif frame_bgr is None:
                     display = _error_frame("Waiting for first frame from agent...")
                 else:
                     display = _visualize(frame_bgr)
@@ -190,18 +202,14 @@ def _generate_project_frames():
 
 
 def _project_agent_loop():
-    """Run project task main loop in background thread."""
-    global running
+    """Run project task main loop (vision always on; drive gated by UI Start)."""
     if camera is None:
         print("[Project] Agent loop skipped: camera unavailable")
         return
-    running = True
     try:
         project_agent.main(camera, wheels, leds, stop_event)
     except Exception as e:
         print(f"[Project] Agent loop crashed: {e}")
-    finally:
-        running = False
 
 
 @app.route("/")
@@ -222,20 +230,23 @@ def shutdown():
 
 @app.route("/start", methods=["POST"])
 def start():
-    global _agent_thread, running
+    global running
     if _agent_thread is None or not _agent_thread.is_alive():
         return jsonify({"status": "stopped", "message": "restart task process to start again"})
+    project_agent.set_drive_enabled(True)
     running = True
+    print("[Project] Drive enabled (UI Start)")
     return jsonify({"status": "running"})
 
 
 @app.route("/stop", methods=["POST"])
 def stop():
     global running
+    project_agent.set_drive_enabled(False)
     running = False
-    stop_event.set()
     if wheels:
         wheels.set_wheels_speed(0.0, 0.0)
+    print("[Project] Drive disabled (UI Stop)")
     return jsonify({"status": "stopped"})
 
 
@@ -248,7 +259,7 @@ def get_running():
 def reset():
     if hasattr(wheels, "reset_game"):
         wheels.reset_game()
-    if wheels is not None and agent is not None:
+    if running and wheels is not None and agent is not None:
         wheels.set_wheels_speed(agent.base_speed, agent.base_speed)
     return jsonify({"status": "ok"})
 
@@ -362,13 +373,12 @@ def main():
     wheels = DaguWheelsDriver(WheelPWMConfiguration(), WheelPWMConfiguration())
     print("  Wheels: ok")
 
-    print("\n[3/4] Initializing camera driver...")
-    if not _try_start_camera(max_attempts=2):
-        print("  Camera: unavailable now (server will continue, retrying in background)")
-
-    print("\n[4/4] Initializing project lane agent...")
+    print("\n[3/4] Initializing project lane agent...")
     agent = project_agent.build_project_lane_agent()
-    print("  Agent: ready")
+    project_agent.set_drive_enabled(False)
+    print("  Agent: ready (press Start in UI to drive)")
+
+    print("\n[4/4] Camera will init in background (web UI starts now)")
 
     def _shutdown(signum, frame):
         print("\nShutting down...")
@@ -388,11 +398,10 @@ def main():
     print(f"\nWeb Interface: http://localhost:{web_port}")
     print("Press Ctrl+C to stop\n")
 
-    _start_agent_thread()
     threading.Thread(target=_camera_retry_loop, daemon=True, name="ProjectCameraRetry").start()
 
     try:
-        app.run(host="0.0.0.0", port=web_port, debug=False, threaded=True)
+        app.run(host="0.0.0.0", port=web_port, debug=False, threaded=True, use_reloader=False)
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:

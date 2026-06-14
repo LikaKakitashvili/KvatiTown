@@ -7,6 +7,8 @@ import cv2
 import requests
 import yaml
 from tasks.project.packages.lane_agent import LaneServoingAgent
+from tasks.project.packages.april_tag import detect_tags, get_detector_backend
+from tasks.project.packages.leader_detection import check_leader_vision, speed_cap_from_vision
 
 
 _CONFIG_PATH = os.path.normpath(
@@ -33,32 +35,28 @@ _leader_status: Dict[str, Any] = {
     "ts": float(time.time()),
 }
 
-_aruco_detector = None
-_aruco_init_attempted = False
 _tag_log_state = {"last_ids": frozenset(), "last_log_ts": 0.0}
-
-
-class _TagDetection:
-    """ArUco tag detection (tag36h11 via OpenCV)."""
-
-    __slots__ = ("tag_id", "center", "corners")
-
-    def __init__(self, tag_id: int, center: Tuple[float, float], corners):
-        self.tag_id = int(tag_id)
-        self.center = center
-        self.corners = corners
-
 
 _sign_runtime = {
     "candidate_event": EVENT_NORMAL,
     "candidate_count": 0,
     "active_until": 0.0,
 }
+
+# Pass-through stop: drive while sign is visible, stop once it leaves the frame.
+_stop_pass_runtime = {
+    "tracking": False,
+    "confirm_count": 0,
+    "cooldown_until": 0.0,
+}
 _lane_agent: Optional[LaneServoingAgent] = None
 
 _viz_lock = threading.Lock()
 _viz_frame_bgr: Optional[Any] = None
 _viz_debug_info: Optional[Dict[str, Any]] = None
+
+_drive_lock = threading.Lock()
+_drive_enabled = False
 
 
 def set_viz_snapshot(frame_bgr: Optional[Any], debug_info: Optional[Dict[str, Any]] = None) -> None:
@@ -75,6 +73,17 @@ def get_viz_snapshot() -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
             return None, None
         debug = None if _viz_debug_info is None else dict(_viz_debug_info)
         return _viz_frame_bgr.copy(), debug
+
+
+def set_drive_enabled(enabled: bool) -> None:
+    global _drive_enabled
+    with _drive_lock:
+        _drive_enabled = bool(enabled)
+
+
+def is_drive_enabled() -> bool:
+    with _drive_lock:
+        return _drive_enabled
 
 
 def load_config() -> Dict[str, Any]:
@@ -109,6 +118,13 @@ def load_config() -> Dict[str, Any]:
         "sign_cooldown_s": float(cfg.get("sign_cooldown_s", 2.0)),
         "sign_center_roi": float(cfg.get("sign_center_roi", 1.0)),
         "leader_tag_ids": [int(x) for x in cfg.get("leader_tag_ids", [])],
+        "vision_avoid_enabled": bool(cfg.get("vision_avoid_enabled", False)),
+        "vision_leader_class_id": int(cfg.get("vision_leader_class_id", 0)),
+        "vision_conf_min": float(cfg.get("vision_conf_min", 0.5)),
+        "vision_stop_ratio": float(cfg.get("vision_stop_ratio", 0.12)),
+        "vision_slow_ratio": float(cfg.get("vision_slow_ratio", 0.06)),
+        "vision_stop_y_frac": float(cfg.get("vision_stop_y_frac", 0.55)),
+        "vision_detect_interval": int(cfg.get("vision_detect_interval", 2)),
     }
 
 
@@ -138,6 +154,58 @@ def _safe_stop(wheels) -> None:
             wheels.set_wheels_speed(0.0, 0.0)
     except Exception as e:
         print(f"[Project] Wheels stop failed: {e}")
+
+
+def _apply_drive(wheels, left: float, right: float) -> None:
+    """Send wheel commands only after the UI Start button enables driving."""
+    if not is_drive_enabled():
+        _safe_stop(wheels)
+        return
+    if wheels is not None:
+        wheels.set_wheels_speed(left, right)
+
+
+_LED_CORNERS = (0, 2, 3, 4)
+_COLOR_OFF = [0.0, 0.0, 0.0]
+_COLOR_SLOW = [1.0, 1.0, 0.0]
+_COLOR_STOP = [1.0, 0.0, 0.0]
+_last_led_state: Optional[str] = None
+
+
+def _set_all_leds(leds, color: List[float]) -> None:
+    if leds is None:
+        return
+    try:
+        for idx in _LED_CORNERS:
+            leds.set_rgb(idx, color)
+    except Exception as e:
+        print(f"[Project] LED update failed: {e}", flush=True)
+
+
+def apply_convoy_leds(leds, convoy_state: str) -> None:
+    """Yellow = slow, red = stopping/stopped/timeout; lights off while cruising."""
+    global _last_led_state
+    state = str(convoy_state).upper()
+    if state == _last_led_state:
+        return
+    _last_led_state = state
+    if state in (STATE_STOPPING, STATE_STOPPED, EVENT_TIMEOUT):
+        _set_all_leds(leds, _COLOR_STOP)
+    elif state == STATE_SLOW:
+        _set_all_leds(leds, _COLOR_SLOW)
+    else:
+        _set_all_leds(leds, _COLOR_OFF)
+
+
+def _leds_off(leds) -> None:
+    global _last_led_state
+    _last_led_state = None
+    if leds is None:
+        return
+    try:
+        leds.all_off()
+    except Exception as e:
+        print(f"[Project] LED off failed: {e}", flush=True)
 
 
 def smooth_stop(
@@ -185,62 +253,6 @@ def next_state(current_state: str, event: str) -> str:
     return current_state
 
 
-def _init_aruco_detector() -> bool:
-    global _aruco_detector, _aruco_init_attempted
-    if _aruco_init_attempted:
-        return _aruco_detector is not None
-
-    _aruco_init_attempted = True
-    try:
-        _aruco_detector = _create_aruco_detector()
-        print("[Project][ArUco] Detector initialized (DICT_APRILTAG_36h11).", flush=True)
-        return True
-    except Exception as e:
-        _aruco_detector = None
-        print(f"[Project][ArUco] Detector unavailable ({e}). Sign detection disabled.", flush=True)
-        return False
-
-
-def _create_aruco_detector():
-    aruco = cv2.aruco
-    dict_id = getattr(aruco, "DICT_APRILTAG_36h11", None)
-    if dict_id is None:
-        raise RuntimeError("OpenCV build lacks DICT_APRILTAG_36h11")
-
-    if hasattr(aruco, "getPredefinedDictionary"):
-        dictionary = aruco.getPredefinedDictionary(dict_id)
-    else:
-        dictionary = aruco.Dictionary_get(dict_id)
-
-    if hasattr(aruco, "DetectorParameters"):
-        params = aruco.DetectorParameters()
-    else:
-        params = aruco.DetectorParameters_create()
-
-    if hasattr(aruco, "ArucoDetector"):
-        return aruco.ArucoDetector(dictionary, params)
-    return (dictionary, params)
-
-
-def _detect_aruco_tags(frame_gray, aruco_det) -> List[_TagDetection]:
-    if isinstance(aruco_det, tuple):
-        dictionary, params = aruco_det
-        corners, ids, _ = cv2.aruco.detectMarkers(frame_gray, dictionary, parameters=params)
-    else:
-        corners, ids, _ = aruco_det.detectMarkers(frame_gray)
-
-    if ids is None or len(ids) == 0:
-        return []
-
-    out: List[_TagDetection] = []
-    for i, tag_id in enumerate(ids.reshape(-1)):
-        pts = corners[i].reshape(4, 2)
-        cx = float(pts[:, 0].mean())
-        cy = float(pts[:, 1].mean())
-        out.append(_TagDetection(int(tag_id), (cx, cy), pts))
-    return out
-
-
 def _log_tag_detections(detections: List[Any]) -> None:
     if not detections:
         return
@@ -263,21 +275,18 @@ def _log_tag_detections(detections: List[Any]) -> None:
     id_set = frozenset(ids)
     changed = id_set != _tag_log_state["last_ids"]
     if changed or (now - float(_tag_log_state["last_log_ts"])) >= 1.0:
-        print(f"[Project][ArUco] detected {len(ids)} tag(s): {', '.join(parts)}", flush=True)
+        print(f"[Project][AprilTag] tracked {len(ids)} tag(s): {', '.join(parts)}", flush=True)
         _tag_log_state["last_ids"] = id_set
         _tag_log_state["last_log_ts"] = now
 
 
 def _detect_apriltags(frame_gray) -> List[Any]:
-    if not _init_aruco_detector() or frame_gray is None or _aruco_detector is None:
-        return []
-
     try:
-        detections = _detect_aruco_tags(frame_gray, _aruco_detector)
+        detections = detect_tags(frame_gray)
         _log_tag_detections(detections)
         return detections
     except Exception as e:
-        print(f"[Project][ArUco] detect failed: {e}", flush=True)
+        print(f"[Project][AprilTag] detect failed: {e}", flush=True)
         return []
 
 
@@ -299,9 +308,8 @@ def _extract_frame_gray(camera) -> Tuple[Optional[Any], Optional[Any]]:
 
 
 def get_tag_detector_backend() -> Optional[str]:
-    """Return active backend name: 'aruco' or None."""
-    _init_aruco_detector()
-    return "aruco" if _aruco_detector is not None else None
+    backend = get_detector_backend()
+    return None if backend == "none" else backend
 
 
 def _classify_event_from_detections(
@@ -346,12 +354,74 @@ def _classify_event_from_detections(
     return EVENT_NORMAL
 
 
+def _stop_sign_visible(
+    detections: List[Any],
+    frame_shape: Optional[Tuple[int, int]],
+    cfg: Dict[str, Any],
+) -> bool:
+    stop_ids = set(int(x) for x in cfg.get("stop_tag_ids", []))
+    center_roi = float(cfg.get("sign_center_roi", 1.0))
+    return _classify_event_from_detections(
+        detections=detections,
+        stop_ids=stop_ids,
+        slow_ids=set(),
+        frame_shape=frame_shape,
+        center_roi=center_roi,
+    ) == EVENT_STOP_SIGN
+
+
+def detect_stop_pass_trigger(
+    detections: List[Any],
+    frame_shape: Optional[Tuple[int, int]],
+    cfg: Dict[str, Any],
+) -> bool:
+    """
+    Pass-through stop behaviour:
+    - While the stop sign is visible: keep driving (return False).
+    - When the sign leaves the frame after being confirmed: return True once.
+    """
+    now = time.time()
+    if now < float(_stop_pass_runtime["cooldown_until"]):
+        return False
+
+    confirm_frames = max(1, int(cfg.get("sign_confirm_frames", 3)))
+    visible = _stop_sign_visible(detections, frame_shape, cfg)
+
+    if visible:
+        if _stop_pass_runtime["tracking"]:
+            _stop_pass_runtime["confirm_count"] = confirm_frames
+        else:
+            _stop_pass_runtime["confirm_count"] = int(_stop_pass_runtime["confirm_count"]) + 1
+            if int(_stop_pass_runtime["confirm_count"]) >= confirm_frames:
+                _stop_pass_runtime["tracking"] = True
+                print(
+                    "[Project][Leader] Stop sign confirmed — keep driving until it leaves frame",
+                    flush=True,
+                )
+        return False
+
+    if _stop_pass_runtime["tracking"]:
+        _stop_pass_runtime["tracking"] = False
+        _stop_pass_runtime["confirm_count"] = 0
+        cooldown_s = max(0.0, float(cfg.get("sign_cooldown_s", 2.0)))
+        _stop_pass_runtime["cooldown_until"] = now + cooldown_s
+        print("[Project][Leader] Stop sign left frame — stopping now", flush=True)
+        return True
+
+    _stop_pass_runtime["confirm_count"] = 0
+    return False
+
+
+def is_stop_sign_tracking() -> bool:
+    return bool(_stop_pass_runtime["tracking"])
+
+
 def detect_sign_event(
     detections: List[Any],
     frame_shape: Optional[Tuple[int, int]],
     cfg: Dict[str, Any],
 ) -> str:
-    stop_ids = set(int(x) for x in cfg.get("stop_tag_ids", []))
+    """Debounce slow-sign events only (stop uses pass-through logic)."""
     slow_ids = set(int(x) for x in cfg.get("slow_tag_ids", []))
     confirm_frames = max(1, int(cfg.get("sign_confirm_frames", 3)))
     cooldown_s = max(0.0, float(cfg.get("sign_cooldown_s", 2.0)))
@@ -359,7 +429,7 @@ def detect_sign_event(
 
     raw_event = _classify_event_from_detections(
         detections=detections,
-        stop_ids=stop_ids,
+        stop_ids=set(),
         slow_ids=slow_ids,
         frame_shape=frame_shape,
         center_roi=center_roi,
@@ -500,27 +570,45 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             except Exception:
                 pass
 
-        event = detect_sign_event(detections, frame_shape, cfg)
-        last_event = event
+        slow_event = detect_sign_event(detections, frame_shape, cfg)
+        stop_trigger = detect_stop_pass_trigger(detections, frame_shape, cfg)
+        if stop_trigger:
+            fsm_event = EVENT_STOP_SIGN
+        elif slow_event == EVENT_SLOW_SIGN:
+            fsm_event = EVENT_SLOW_SIGN
+        else:
+            fsm_event = EVENT_NORMAL
+
+        if is_stop_sign_tracking():
+            last_event = EVENT_STOP_SIGN
+        else:
+            last_event = fsm_event
+
         if now >= stop_until:
-            proposed = next_state(state, event)
+            proposed = next_state(state, fsm_event)
         else:
             proposed = state
 
         if proposed != state:
-            print(f"[Project][Leader] transition {state} -> {proposed} ({event})", flush=True)
+            print(f"[Project][Leader] transition {state} -> {proposed} ({fsm_event})", flush=True)
             state = proposed
 
+        apply_convoy_leds(leds, state)
+
         if state == STATE_STOPPING:
-            smooth_stop(wheels, current_speed, decel_time_s, decel_steps, stop_event)
+            if is_drive_enabled():
+                smooth_stop(wheels, current_speed, decel_time_s, decel_steps, stop_event)
+            else:
+                _safe_stop(wheels)
             current_speed = 0.0
             state = STATE_STOPPED
             stop_until = time.time() + stop_hold_s
         elif state == STATE_STOPPED:
             current_speed = 0.0
             _safe_stop(wheels)
-            if now >= stop_until and event == EVENT_NORMAL:
+            if now >= stop_until:
                 state = STATE_CRUISING
+                print(f"[Project][Leader] Stop hold done ({stop_hold_s:.1f}s) — resuming", flush=True)
         elif state == STATE_SLOW:
             current_speed = max(0.0, slow_speed)
             if wheels is not None and frame_bgr is not None:
@@ -528,9 +616,9 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
                 left, right = lane_agent.compute_commands(frame_bgr, bgr_input=True)
                 cmd_l, cmd_r = _scale_drive_commands(left, right, current_speed)
                 _publish_viz(frame_bgr, lane_agent.last_debug_info, last_event, last_tag_ids, cmd_l, cmd_r)
-                wheels.set_wheels_speed(cmd_l, cmd_r)
+                _apply_drive(wheels, cmd_l, cmd_r)
             elif wheels is not None:
-                wheels.set_wheels_speed(current_speed, current_speed)
+                _apply_drive(wheels, current_speed, current_speed)
                 if frame_bgr is not None:
                     _publish_viz(frame_bgr, _get_lane_agent().last_debug_info, last_event, last_tag_ids, current_speed, current_speed)
         else:
@@ -541,9 +629,9 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
                 left, right = lane_agent.compute_commands(frame_bgr, bgr_input=True)
                 cmd_l, cmd_r = _scale_drive_commands(left, right, current_speed)
                 _publish_viz(frame_bgr, lane_agent.last_debug_info, last_event, last_tag_ids, cmd_l, cmd_r)
-                wheels.set_wheels_speed(cmd_l, cmd_r)
+                _apply_drive(wheels, cmd_l, cmd_r)
             elif wheels is not None:
-                wheels.set_wheels_speed(current_speed, current_speed)
+                _apply_drive(wheels, current_speed, current_speed)
                 if frame_bgr is not None:
                     _publish_viz(frame_bgr, _get_lane_agent().last_debug_info, last_event, last_tag_ids, current_speed, current_speed)
 
@@ -572,6 +660,7 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
 
     set_leader_status(build_status_payload(STATE_STOPPED, 0.0))
     _safe_stop(wheels)
+    _leds_off(leds)
     print("[Project][Leader] Stopped.", flush=True)
 
 
@@ -603,18 +692,21 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
     commanded_speed = 0.0
     prev_mode = None
     last_leader_tag_id = None
+    last_stale_vision_log = 0.0
     leader_tag_ids = set(int(x) for x in cfg.get("leader_tag_ids", []))
     while not stop_event.is_set():
         now = time.time()
         distance_signal = None
         leader_tag_id = None
-        if leader_tag_ids:
-            frame_bgr, frame_gray = _extract_frame_gray(camera)
-            frame_shape = None if frame_bgr is None else frame_bgr.shape[:2]
+        frame_bgr, frame_gray = _extract_frame_gray(camera)
+        frame_shape = None if frame_bgr is None else frame_bgr.shape[:2]
+        if leader_tag_ids and frame_gray is not None:
             detections = _detect_apriltags(frame_gray)
             distance_signal, leader_tag_id = estimate_leader_distance_signal(detections, frame_shape, cfg)
             if leader_tag_id is not None:
                 last_leader_tag_id = leader_tag_id
+
+        vision_ratio, vision_stop = check_leader_vision(frame_bgr, cfg)
 
         if now - last_poll >= poll_dt:
             try:
@@ -632,8 +724,25 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
 
         is_stale = (now - float(latest.get("ts", 0.0))) > leader_timeout_s
         state = str(latest.get("state", "STOPPED")).upper()
-        if is_stale:
-            mode, target_speed = EVENT_TIMEOUT, 0.0
+
+        if vision_stop:
+            mode, target_speed = STATE_STOPPED, 0.0
+        elif is_stale:
+            if vision_ratio is not None:
+                cap = speed_cap_from_vision(vision_ratio, cfg, follower_max_speed)
+                if cap <= 0.0:
+                    mode, target_speed = STATE_STOPPED, 0.0
+                else:
+                    mode, target_speed = STATE_CRUISING, cap
+                    if now - last_stale_vision_log >= 1.0:
+                        print(
+                            f"[Project][Follower] network stale — following leader by vision "
+                            f"(ratio={vision_ratio:.3f}, speed={cap:.2f})",
+                            flush=True,
+                        )
+                        last_stale_vision_log = now
+            else:
+                mode, target_speed = EVENT_TIMEOUT, 0.0
         elif state == STATE_STOPPED:
             mode, target_speed = STATE_STOPPED, 0.0
         elif state == STATE_SLOW:
@@ -641,25 +750,35 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
         else:
             mode, target_speed = STATE_CRUISING, min(cruise_speed, follower_max_speed)
 
+        if (
+            not vision_stop
+            and vision_ratio is not None
+            and mode in (STATE_CRUISING, STATE_SLOW)
+        ):
+            target_speed = min(
+                target_speed,
+                speed_cap_from_vision(vision_ratio, cfg, target_speed),
+            )
+
         if mode in (STATE_CRUISING, STATE_SLOW) and distance_signal is not None:
             # Smaller observed tag -> farther away -> increase speed.
             distance_error = distance_target - float(distance_signal)
             target_speed += distance_kp * distance_error
             target_speed = max(follower_min_speed, min(follower_max_speed, target_speed))
 
+        published_viz = False
+
         if mode == EVENT_TIMEOUT:
             commanded_speed = 0.0
             _safe_stop(wheels)
         elif mode == STATE_STOPPED:
-            if commanded_speed > 0.0:
+            if commanded_speed > 0.0 and is_drive_enabled():
                 smooth_stop(wheels, commanded_speed, decel_time_s, decel_steps, stop_event)
             commanded_speed = 0.0
+            _safe_stop(wheels)
         else:
             commanded_speed = target_speed
-            frame_bgr = None
-            if camera is not None:
-                frame_bgr, _ = _extract_frame_gray(camera)
-            if wheels is not None and frame_bgr is not None:
+            if frame_bgr is not None:
                 lane_agent = _get_lane_agent()
                 left, right = lane_agent.compute_commands(frame_bgr, bgr_input=True)
                 cmd_l, cmd_r = _scale_drive_commands(left, right, commanded_speed)
@@ -672,22 +791,29 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
                     cmd_l,
                     cmd_r,
                 )
-                wheels.set_wheels_speed(cmd_l, cmd_r)
+                published_viz = True
+                _apply_drive(wheels, cmd_l, cmd_r)
             elif wheels is not None:
-                wheels.set_wheels_speed(commanded_speed, commanded_speed)
-                if frame_bgr is not None:
-                    _publish_viz(
-                        frame_bgr,
-                        _get_lane_agent().last_debug_info,
-                        EVENT_NORMAL,
-                        [],
-                        commanded_speed,
-                        commanded_speed,
-                    )
+                _apply_drive(wheels, commanded_speed, commanded_speed)
+
+        if frame_bgr is not None and not published_viz:
+            lane_agent = _get_lane_agent()
+            lane_agent.compute_commands(frame_bgr, bgr_input=True)
+            leader = get_leader_status()
+            _publish_viz(
+                frame_bgr,
+                lane_agent.last_debug_info,
+                str(leader.get("event", EVENT_NORMAL)),
+                list(leader.get("tag_ids", [])),
+                0.0,
+                0.0,
+            )
 
         if mode != prev_mode:
             print(f"[Project][Follower] transition {prev_mode} -> {mode}", flush=True)
             prev_mode = mode
+
+        apply_convoy_leds(leds, mode)
 
         if now - last_log >= 2.0:
             age = now - float(latest.get("ts", 0.0))
@@ -701,6 +827,7 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
         time.sleep(dt)
 
     _safe_stop(wheels)
+    _leds_off(leds)
     print("[Project][Follower] Stopped.", flush=True)
 
 
