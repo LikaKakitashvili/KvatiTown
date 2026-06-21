@@ -20,9 +20,9 @@ _white_lower  = np.array([_h.get("white_lower_h",   0), _h.get("white_lower_s", 
 _white_upper  = np.array([_h.get("white_upper_h", 179), _h.get("white_upper_s",  60), _h.get("white_upper_v", 255)], dtype=np.uint8)
 
 # ROI: only process the bottom portion of the frame
-_ROI_START = 0.42
-# White line is always on the right half
-_WHITE_LEFT_CLIP = 0.42
+_ROI_START = 0.45
+# White line: small left clip to avoid yellow-line false positives on turns
+_WHITE_LEFT_CLIP = 0.20
 
 
 def detect_lane_markings(image):

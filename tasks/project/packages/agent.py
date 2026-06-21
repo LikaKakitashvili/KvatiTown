@@ -64,6 +64,7 @@ _sign_runtime = {
 _sign_approach = {
     "pending_event": EVENT_NORMAL,
     "confirmed": False,
+    "missing_count": 0,   # consecutive frames the confirmed sign has been absent
 }
 
 _lane_agent: Optional[LaneServoingAgent] = None
@@ -117,8 +118,11 @@ def load_config() -> Dict[str, Any]:
         "stop_tag_ids":        [int(x) for x in cfg.get("stop_tag_ids", [])],
         "slow_tag_ids":        [int(x) for x in cfg.get("slow_tag_ids", [])],
         "sign_confirm_frames": int(cfg.get("sign_confirm_frames", 2)),
+        "sign_exit_frames":    int(cfg.get("sign_exit_frames", 5)),
         "sign_cooldown_s":     float(cfg.get("sign_cooldown_s", 3.0)),
         "sign_center_roi":     float(cfg.get("sign_center_roi", 1.0)),
+        "post_stop_lane_bias": float(cfg.get("post_stop_lane_bias", -0.12)),
+        "post_stop_bias_s":    float(cfg.get("post_stop_bias_s", 4.0)),
         "leader_tag_ids":      [int(x) for x in cfg.get("leader_tag_ids", [])],
         "slow_hold_s":         float(cfg.get("slow_hold_s", 2.0)),
         # solo_test: when True the follower cruises if the leader is unreachable,
@@ -154,6 +158,20 @@ def _safe_stop(wheels) -> None:
             wheels.set_wheels_speed(0.0, 0.0)
     except Exception as e:
         print(f"[Project] Wheels stop failed: {e}")
+
+
+def _set_leds(leds, state: str) -> None:
+    """White while driving, red when stopped or slowing due to a sign."""
+    if leds is None:
+        return
+    try:
+        if state in (STATE_STOPPED, STATE_STOPPING, STATE_SLOW):
+            for led in [0, 2, 3, 4]:
+                leds.set_rgb(led, [1.0, 0.0, 0.0])   # red
+        else:
+            leds.all_on()                              # white
+    except Exception as e:
+        print(f"[Project] LED update failed: {e}")
 
 
 def smooth_stop(
@@ -219,6 +237,10 @@ def detect_sign_event(confirmed_ids, cfg):
     """
     confirm_frames = max(1, int(cfg.get("sign_confirm_frames", 2)))
     cooldown_s     = max(0.0, float(cfg.get("sign_cooldown_s", 1.5)))
+    # How many consecutive frames the sign must be ABSENT before we treat it as
+    # truly out of frame. AprilTag detection flickers, so a single missed frame
+    # while the sign is still in view must NOT trigger the action early.
+    exit_frames    = max(1, int(cfg.get("sign_exit_frames", 5)))
 
     raw_event = _classify_tags(confirmed_ids)
     now       = time.time()
@@ -228,7 +250,7 @@ def detect_sign_event(confirmed_ids, cfg):
         return EVENT_NORMAL
 
     if raw_event != EVENT_NORMAL:
-        # Sign visible — accumulate confirmation frames.
+        # Sign visible — accumulate confirmation frames and reset the absence counter.
         if _sign_runtime["candidate_event"] == raw_event:
             _sign_runtime["candidate_count"] = int(_sign_runtime["candidate_count"]) + 1
         else:
@@ -239,14 +261,22 @@ def detect_sign_event(confirmed_ids, cfg):
             _sign_approach["pending_event"] = raw_event
             _sign_approach["confirmed"]     = True
 
+        _sign_approach["missing_count"] = 0   # sign is back in view → reset absence
         return EVENT_NORMAL  # keep cruising while sign is in view
 
-    # Sign no longer visible.
+    # No sign detected this frame.
     if _sign_approach["confirmed"] and _sign_approach["pending_event"] != EVENT_NORMAL:
-        # Fire the stored action now that the sign has left the frame.
+        # Debounce: only fire after the sign has been absent for enough frames,
+        # so a brief detection flicker doesn't trigger the action prematurely.
+        _sign_approach["missing_count"] = int(_sign_approach["missing_count"]) + 1
+        if int(_sign_approach["missing_count"]) < exit_frames:
+            return EVENT_NORMAL  # probably just a flicker — keep cruising
+
+        # Sign has genuinely left the frame — fire the stored action.
         action = _sign_approach["pending_event"]
         _sign_approach["pending_event"] = EVENT_NORMAL
         _sign_approach["confirmed"]     = False
+        _sign_approach["missing_count"] = 0
         _sign_runtime["candidate_event"] = EVENT_NORMAL
         _sign_runtime["candidate_count"] = 0
         _sign_runtime["active_until"]    = now + cooldown_s
@@ -271,27 +301,43 @@ _BLUE_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 #   > _BLUE_MAX  : leader too close   → stop (prevents crashing)
 # Between min and max: leader in view → drive, speed scaled by distance
 _BLUE_MIN_RATIO  = 0.03   # below this: not visible
-_BLUE_MAX_RATIO  = 0.22   # above this: too close, stop
-_BLUE_NEAR_RATIO = 0.12   # above this: start slowing down
+_BLUE_MAX_RATIO  = 0.72   # above this: too close, stop (prevents crashing)
+_BLUE_NEAR_RATIO = 0.52   # above this: start slowing down
 
 
 def _detect_blue_robot(frame_bgr):
-    # type: (Optional[Any]) -> Tuple[bool, bool, float]
-    """Return (visible, too_close, coverage_ratio) for the blue Duckiebot body."""
+    # type: (Optional[Any]) -> Tuple[bool, bool, float, Optional[float]]
+    """Return (visible, too_close, coverage_ratio, offset_x).
+
+    offset_x is the blue body's horizontal position relative to frame centre,
+    normalized to [-1, 1]: negative = leader is to the left, positive = right.
+    Returns None for offset_x when the leader isn't seen.
+    Uses the FULL frame width so the leader can still be located during turns.
+    """
     if frame_bgr is None:
-        return False, False, 0.0
+        return False, False, 0.0, None
     h, w = frame_bgr.shape[:2]
-    # Lower 70% of frame, centre 80% width — where the leader body appears.
-    roi = frame_bgr[int(h * 0.15):, int(w * 0.10): int(w * 0.90)]
+    # Use full width (only trim a little top) so a turning leader stays trackable.
+    x0 = int(w * 0.02)
+    roi = frame_bgr[int(h * 0.10):, x0: int(w * 0.98)]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, _BLUE_LOWER, _BLUE_UPPER)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,   _BLUE_KERNEL)
     mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE,  _BLUE_KERNEL)
     area  = float(np.count_nonzero(mask))
     ratio = area / max(1.0, float(roi.shape[0] * roi.shape[1]))
+
+    offset_x = None
+    if area > 0:
+        xs = np.where(mask > 0)[1]
+        if len(xs) > 0:
+            centroid_x = float(np.mean(xs)) + x0      # back to full-frame coords
+            offset_x   = (centroid_x - w / 2.0) / (w / 2.0)
+            offset_x   = float(np.clip(offset_x, -1.0, 1.0))
+
     visible   = _BLUE_MIN_RATIO <= ratio < _BLUE_MAX_RATIO
     too_close = ratio >= _BLUE_MAX_RATIO
-    return visible, too_close, ratio
+    return visible, too_close, ratio, offset_x
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +469,9 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
     last_event      = EVENT_NORMAL
     last_tag_ids: List[int] = []
 
+    # Start with white LEDs
+    _set_leds(leds, STATE_CRUISING)
+
     while not stop_event.is_set():
         now = time.time()
         frame_bgr, frame_rgb = _read_camera(camera)
@@ -448,6 +497,7 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
         if proposed != state:
             print(f"[Project][Leader] transition {state} -> {proposed} ({event})", flush=True)
             state = proposed
+            _set_leds(leds, state)
 
         if state == STATE_STOPPING:
             smooth_stop(wheels, current_speed, decel_time_s, decel_steps, stop_event)
@@ -464,6 +514,13 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
                 _sign_runtime["candidate_event"] = EVENT_NORMAL
                 _sign_runtime["candidate_count"] = 0
                 state = STATE_CRUISING
+                _set_leds(leds, STATE_CRUISING)
+                # Nudge left after stop so the bot resumes with more clearance from white.
+                la = _get_lane_agent()
+                la.apply_post_stop_bias(
+                    bias=float(cfg.get("post_stop_lane_bias", -0.12)),
+                    duration_s=float(cfg.get("post_stop_bias_s", 4.0)),
+                )
 
         elif state == STATE_SLOW:
             current_speed = max(0.0, slow_speed)
@@ -508,6 +565,11 @@ def run_leader(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
 
     set_leader_status(build_status_payload(STATE_STOPPED, 0.0))
     _safe_stop(wheels)
+    if leds is not None:
+        try:
+            leds.all_off()
+        except Exception:
+            pass
     print("[Project][Leader] Stopped.", flush=True)
 
 
@@ -555,6 +617,12 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
     prev_mode       = None
     last_leader_tag_id = None
 
+    # Visual-follow steering / grace-period state
+    follow_offset_x      = 0.0     # smoothed horizontal position of the leader
+    last_seen_ts         = 0.0     # last time the leader was visible
+    follow_grace_s       = float(cfg.get("follow_grace_s", 1.2))  # keep tracking after losing sight
+    follow_steer_gain    = float(cfg.get("follow_steer_gain", 0.6))
+
     while not stop_event.is_set():
         now = time.time()
         distance_signal = None
@@ -575,14 +643,23 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             # Visual-only mode: drive when the leader is visible, stop otherwise.
             # If leader_tag_ids are configured, use AprilTag detection (distance_signal).
             # If leader_tag_ids is empty, use blue-robot color detection with
-            # proportional speed: slows as the leader fills the frame, stops when
-            # the leader is too close (prevents crashing into a stopped leader).
+            # proportional speed and steer toward the leader so the follower can
+            # track it around turns instead of blindly following the lane.
+            offset_x = None
             if leader_tag_ids:
                 leader_visible = distance_signal is not None
                 too_close      = False
                 blue_ratio     = 0.0
             else:
-                leader_visible, too_close, blue_ratio = _detect_blue_robot(frame_bgr)
+                leader_visible, too_close, blue_ratio, offset_x = _detect_blue_robot(frame_bgr)
+
+            # Track the leader's horizontal position (for steering through turns).
+            if offset_x is not None:
+                follow_offset_x = 0.6 * follow_offset_x + 0.4 * offset_x
+            if leader_visible or too_close:
+                last_seen_ts = now
+
+            within_grace = (now - last_seen_ts) <= follow_grace_s
 
             if too_close:
                 # Leader stopped right in front — stop immediately.
@@ -597,11 +674,15 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
                     target_speed   = max(follower_min_speed, min(follower_max_speed, target_speed))
                 else:
                     # Blue-ratio speed control: slow down as leader gets closer.
-                    # Full speed when near _BLUE_MIN_RATIO, zero at _BLUE_NEAR_RATIO.
                     t = max(0.0, min(1.0, (blue_ratio - _BLUE_MIN_RATIO) /
                                          max(0.001, _BLUE_NEAR_RATIO - _BLUE_MIN_RATIO)))
                     target_speed = max(follower_min_speed,
                                        min(cruise_speed, cruise_speed * (1.0 - 0.8 * t)))
+            elif within_grace:
+                # Lost sight (e.g. leader turning) — keep creeping toward the last
+                # known direction for a short grace period instead of stopping.
+                mode = STATE_CRUISING
+                target_speed = max(follower_min_speed, min(cruise_speed, cruise_speed * 0.6))
             else:
                 mode, target_speed = STATE_STOPPED, 0.0
         else:
@@ -650,7 +731,15 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
             _safe_stop(wheels)
         else:
             commanded_speed = target_speed
-            if wheels is not None and frame_bgr is not None:
+            if visual_follow and not leader_tag_ids and wheels is not None:
+                # Steer toward the leader's blue body so we track it around turns.
+                steer = follow_steer_gain * follow_offset_x
+                cmd_l = float(np.clip(commanded_speed + steer, 0.0, follower_max_speed))
+                cmd_r = float(np.clip(commanded_speed - steer, 0.0, follower_max_speed))
+                if frame_bgr is not None:
+                    set_viz_snapshot(frame_bgr)
+                wheels.set_wheels_speed(cmd_l, cmd_r)
+            elif wheels is not None and frame_bgr is not None:
                 la = _get_lane_agent()
                 la.base_speed = commanded_speed
                 cmd_l, cmd_r = la.compute_commands(frame_bgr, bgr_input=True)
@@ -680,7 +769,7 @@ def run_follower(camera, wheels, leds, stop_event, cfg: Dict[str, Any]) -> None:
                 print(
                     f"[Project][Follower] mode={mode} target={target_speed:.2f} "
                     f"cmd={commanded_speed:.2f} blue={blue_ratio:.3f} "
-                    f"too_close={too_close}",
+                    f"too_close={too_close} offset={follow_offset_x:+.2f}",
                     flush=True,
                 )
             else:

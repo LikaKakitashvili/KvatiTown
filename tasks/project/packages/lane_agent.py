@@ -1,4 +1,5 @@
 import os
+import time
 import yaml
 import numpy as np
 import cv2
@@ -13,14 +14,15 @@ _CONFIG_FILE = os.path.normpath(os.path.join(
 ))
 
 _LINE_OFFSET = 160
-_ROI_START   = 0.47
-_NUM_SLICES  = 3
+_ROI_START   = 0.45
+_ROI_SPAN    = 0.45
+_NUM_SLICES  = 4
 _SLICE_TOL   = 5
 
 
 def detect_lines_in_slices(mask_yellow, mask_white, h):
     # type: (np.ndarray, np.ndarray, int) -> Tuple[list, list]
-    slice_height = int(h * 0.35 / _NUM_SLICES)
+    slice_height = int(h * _ROI_SPAN / _NUM_SLICES)
     start_y      = int(h * _ROI_START)
     yellow_xs, white_xs = [], []
 
@@ -69,6 +71,23 @@ class LaneServoingAgent:
         self._left_history       = deque(maxlen=3)
         self._right_history      = deque(maxlen=3)
         self.last_debug_info     = self._empty_debug_info(480, 640)
+
+        # Temporary lateral bias (normalized): negative = steer left, away from white line.
+        self._lateral_bias       = 0.0
+        self._bias_until         = 0.0
+
+    def apply_post_stop_bias(self, bias=-0.12, duration_s=4.0):
+        # type: (float, float) -> None
+        """After a stop sign, nudge the bot left so it resumes with more clearance from white."""
+        self._lateral_bias = float(np.clip(bias, -0.35, 0.35))
+        self._bias_until   = time.monotonic() + max(0.0, float(duration_s))
+
+    def _active_lateral_bias(self):
+        # type: () -> float
+        if time.monotonic() >= self._bias_until:
+            self._lateral_bias = 0.0
+            return 0.0
+        return self._lateral_bias
 
     def _calculate_error(self, yellow_xs, white_xs, left_det, right_det, w):
         if left_det and right_det and yellow_xs and white_xs:
@@ -181,12 +200,15 @@ class LaneServoingAgent:
 
         raw_error            = self._calculate_error(yellow_xs, white_xs, left_det, right_det, w)
         self._filtered_error = 0.82 * self._filtered_error + 0.18 * raw_error
-        steering             = self._calculate_steering(self._filtered_error)
+
+        biased_error = self._filtered_error + self._active_lateral_bias()
+        biased_error = float(np.clip(biased_error, -1.0, 1.0))
+        steering     = self._calculate_steering(biased_error)
 
         left, right = self._motor_commands(steering, lane_detected, is_curve, both_visible)
         left, right = self._smooth(left, right, both_visible)
 
-        slice_height = int(h * 0.35 / _NUM_SLICES)
+        slice_height = int(h * _ROI_SPAN / _NUM_SLICES)
         start_y      = int(h * _ROI_START)
         combined     = np.clip(mask_left + mask_right, 0, 1)
         self.last_debug_info = {
@@ -228,6 +250,8 @@ class LaneServoingAgent:
         self._lane_half_width   = float(_LINE_OFFSET)
         self._left_history      = deque(maxlen=3)
         self._right_history     = deque(maxlen=3)
+        self._lateral_bias      = 0.0
+        self._bias_until        = 0.0
 
     def get_debug_info(self, image):
         return self.last_debug_info

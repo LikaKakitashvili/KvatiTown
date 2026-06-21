@@ -42,6 +42,9 @@ slow_tag_ids: [39]
 sign_confirm_frames: 3
 sign_cooldown_s: 2.0
 sign_center_roi: 1.0
+# Consecutive frames the sign must be ABSENT before the action fires.
+# Higher = more tolerant of AprilTag flicker (won't stop while sign still visible).
+sign_exit_frames: 6
 
 # AprilTag IDs used to recognize the leader robot.
 # Leave empty ([]) to use blue-body color detection instead (no tag needed).
